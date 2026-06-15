@@ -2,6 +2,7 @@ package mdns
 
 import (
 	"net"
+	"strings"
 	"testing"
 
 	"github.com/miekg/dns"
@@ -52,6 +53,31 @@ func TestMerge(t *testing.T) {
 	}
 	if e.Model != "MacBookPro18,3" {
 		t.Errorf("Model=%q, want MacBookPro18,3", e.Model)
+	}
+}
+
+func TestMerge_SanitizesHostileRecords(t *testing.T) {
+	// 第三者が偽装した応答（ANSI エスケープ入り）でも端末出力前に無害化される。
+	msg := &dns.Msg{
+		Answer: []dns.RR{
+			&dns.A{Hdr: dns.RR_Header{Name: "Evil\x1b[31m.local."}, A: net.IPv4(192, 168, 1, 7)},
+		},
+		Extra: []dns.RR{
+			&dns.TXT{
+				Hdr: dns.RR_Header{Name: "Evil._device-info._tcp.local."},
+				Txt: []string{"model=Pwn\x1b[2J\x07"},
+			},
+		},
+	}
+	entries := map[string]Entry{}
+	merge(entries, "192.168.1.7", msg)
+
+	e := entries["192.168.1.7"]
+	if strings.ContainsRune(e.Host, 0x1b) {
+		t.Errorf("Host の ESC が無害化されていない: %q", e.Host)
+	}
+	if strings.ContainsAny(e.Model, "\x1b\x07") {
+		t.Errorf("Model の制御文字が無害化されていない: %q", e.Model)
 	}
 }
 
