@@ -83,6 +83,39 @@ func TestDetect_IgnoresNonOpen(t *testing.T) {
 	}
 }
 
+func TestDetectWithHints_ModelWins(t *testing.T) {
+	// mDNS のモデルはポートプロファイルより優先し、high になる。
+	results := []scanner.Result{open(22, "")} // 本来 Linux/Unix を弱く示唆
+	g := DetectWithHints(results, Hints{Model: "Macmini9,1"})
+	if g.OS != "macOS" || g.Confidence != ConfidenceHigh {
+		t.Errorf("model ヒントが効いていない: %+v", g)
+	}
+}
+
+func TestModelHint(t *testing.T) {
+	cases := map[string]string{
+		"MacBookPro18,3": "macOS",
+		"Macmini9,1":     "macOS",
+		"iMac21,1":       "macOS",
+		"iPhone15,2":     "iOS",
+		"iPad13,1":       "iPadOS",
+		"AppleTV11,1":    "tvOS",
+		"Watch6,1":       "watchOS",
+	}
+	for model, wantOS := range cases {
+		g, ok := modelHint(model)
+		if !ok || g.OS != wantOS {
+			t.Errorf("modelHint(%q)=%q(ok=%v), want %q", model, g.OS, ok, wantOS)
+		}
+	}
+	if _, ok := modelHint(""); ok {
+		t.Error("空 model で ok=true になった")
+	}
+	if _, ok := modelHint("LinuxBox"); ok {
+		t.Error("非 Apple model で ok=true になった")
+	}
+}
+
 func TestConfidence_JSONRoundTrip(t *testing.T) {
 	for _, c := range []Confidence{ConfidenceLow, ConfidenceMedium, ConfidenceHigh} {
 		data, err := json.Marshal(c)

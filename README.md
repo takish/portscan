@@ -1,6 +1,6 @@
 # portscan
 
-指定ホストの TCP ポートをスキャンして、開放されているポートとそのサービス名を表示する CLI ツールです。スキャン中核は標準ライブラリのみで実装しています（TUI 表示のみ bubbletea に依存）。
+指定ホストの TCP ポートをスキャンして、開放されているポートとそのサービス名を表示する CLI ツールです。TUI 表示に bubbletea、mDNS(Bonjour) 探索に miekg/dns を利用しています。
 
 ## 概要
 
@@ -14,6 +14,7 @@
 - 開放ポートに既知リスクがあれば、深刻度・代表攻撃・対策を**常に併記**（防御目的）
 - `-banner` で開放ポートのバナーを取得し、サービス/バージョンを推定（HTTP/TLS 対応）
 - 開放ポートの顔ぶれとバナーから OS を軽量推定し、確度付きで**常に併記**（root 不要）
+- `-mdns` で同一セグメントのホスト名・デバイスモデルを mDNS(Bonjour) 収集（`-discover` では自動有効）
 - よく使うスキャン設定を JSON で保存・読込（`-config` / `-save-config`。フラグで上書き可能）
 
 ## 必要環境
@@ -78,6 +79,7 @@ JSON で結果だけをファイルに保存（進捗は画面に残る）:
 | `-discover` | 同一セグメントの生存ホストを探索してスキャン | `false` |
 | `-cidr` | 探索するサブネット (例 `192.168.1.0/24`)。未指定で自動検出 | （自動） |
 | `-tui` | インタラクティブな TUI 画面でスキャン（単一ホスト専用） | `false` |
+| `-mdns` | mDNS(Bonjour) でホスト名・デバイスモデルを収集して併記（`-discover` では自動有効） | `false` |
 | `-config` | 設定ファイル(JSON)のパス。未指定なら自動探索 | （自動） |
 | `-save-config` | 現在の実効設定を指定パスへ JSON で書き出す | （無効） |
 
@@ -108,8 +110,8 @@ JSON で結果だけをファイルに保存（進捗は画面に残る）:
 
 ### 設定ファイル（JSON）
 
-よく使うスキャン設定を JSON ファイルに保存して使い回せる。依存を増やさないため
-形式は JSON のみ（標準ライブラリで完結）。
+よく使うスキャン設定を JSON ファイルに保存して使い回せる（標準ライブラリの
+encoding/json で読み書き）。
 
 ```bash
 # いまのフラグ内容を設定ファイルに書き出す
@@ -154,6 +156,29 @@ JSON で結果だけをファイルに保存（進捗は画面に残る）:
 
 > 確実な OS フィンガープリンティング（TCP/IP スタック解析等）は行わない。
 > あくまで「開いているポートとバナー」からの推測であり、確度で限界を明示している。
+
+### mDNS（Bonjour）でのホスト名・デバイス検出
+
+`-mdns` を付けると、同一セグメントへ mDNS(Bonjour) 問い合わせを投げ、応答した
+ホストの**ホスト名（`xxx.local`）とデバイスモデル**（例: `Macmini9,1`）を収集して
+スキャン結果に併記する。`-discover` モードでは指定なしでも自動的に併用する。
+
+```bash
+# 単一ホストのスキャンにホスト名・モデルを添える
+./portscan -host 192.168.1.10 -mdns
+
+# ディスカバリでは自動でホスト名・モデルが付く
+./portscan -discover
+```
+
+- `_services._dns-sd._udp.local` と `_device-info._tcp.local` を一括問い合わせし、
+  応答パケットの**送信元 IP をキー**にホスト名・モデルを対応づける（SRV 追跡は不要）
+- Apple 製品のモデルコードは OS 推定にも使う（`Macmini9,1` → macOS / `iPhone15,2` → iOS、確度 high）
+- text はヘッダ行（`ホスト名: ...`）、JSON は `hostname` フィールド、CSV は `hostname` 列に出る
+- mDNS は**リンクローカルマルチキャスト**（224.0.0.251:5353）なのでルーターを越えない
+  ＝同一 L2 セグメント限定。応答が無くてもスキャン本体は妨げない（best-effort）
+
+> DNS ワイヤーフォーマット解析には [miekg/dns](https://github.com/miekg/dns) を利用している。
 
 ### ホストディスカバリ
 
@@ -234,13 +259,16 @@ localhost で 1001 ポートをスキャンした参考値:
     ├── config/
     │   ├── config.go            # スキャン設定の JSON 保存・読込（フラグ優先のマージ）
     │   └── config_test.go       # テスト
+    ├── mdns/
+    │   ├── mdns.go              # mDNS(Bonjour) でホスト名・デバイスモデルを収集
+    │   └── mdns_test.go         # テスト
     └── tui/
         ├── tui.go               # bubbletea によるインタラクティブ画面
         └── tui_test.go          # Model-Update-View のロジックテスト
 ```
 
-スキャン中核（`scanner` / `discover` / `report` / `risk` / `osdetect`）は標準ライブラリのみ。
-外部依存は TUI 表示に使う [bubbletea](https://github.com/charmbracelet/bubbletea) 系のみで、
+外部依存は TUI 表示の [bubbletea](https://github.com/charmbracelet/bubbletea) 系と、
+mDNS 探索の [miekg/dns](https://github.com/miekg/dns) のみ。
 `scanner.ScanStream` がスキャンイベントを逐次チャネルへ流し、`tui` がそれを購読して描画する。
 リスク情報は `risk.Lookup`、OS 推定は `osdetect.Detect` を `report` / `tui` が描画時に引いて結合する。
 

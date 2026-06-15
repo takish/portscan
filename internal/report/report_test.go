@@ -231,6 +231,62 @@ func TestRenderCSV_IncludesOS(t *testing.T) {
 	}
 }
 
+// mDNS 由来の Meta（ホスト名・モデル）が各フォーマットに反映されることを確認する。
+func TestRenderWithMeta_Text(t *testing.T) {
+	var buf bytes.Buffer
+	meta := Meta{Hostname: "Foo.local", Model: "Macmini9,1"}
+	if err := RenderWithMeta(&buf, sample, FormatText, meta); err != nil {
+		t.Fatalf("RenderWithMeta が失敗: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "ホスト名: Foo.local") {
+		t.Errorf("text 出力にホスト名が含まれない:\n%s", out)
+	}
+	// model ヒントが OS 推定を macOS(high) に上書きすること。
+	if !strings.Contains(out, "推定OS: macOS") {
+		t.Errorf("model ヒントが OS 推定に効いていない:\n%s", out)
+	}
+}
+
+func TestRenderWithMeta_JSON(t *testing.T) {
+	var buf bytes.Buffer
+	meta := Meta{Hostname: "Foo.local", Model: "Macmini9,1"}
+	if err := RenderWithMeta(&buf, sample, FormatJSON, meta); err != nil {
+		t.Fatalf("RenderWithMeta が失敗: %v", err)
+	}
+	var got struct {
+		Hostname string `json:"hostname"`
+		OS       struct {
+			OS string `json:"os"`
+		} `json:"os"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("JSON 解析失敗: %v\n%s", err, buf.String())
+	}
+	if got.Hostname != "Foo.local" {
+		t.Errorf("JSON に hostname が無い: %+v", got)
+	}
+	if got.OS.OS != "macOS" {
+		t.Errorf("JSON の OS 推定に model が効いていない: %+v", got.OS)
+	}
+}
+
+func TestRenderWithMeta_CSVHostnameColumn(t *testing.T) {
+	var buf bytes.Buffer
+	meta := Meta{Hostname: "Foo.local"}
+	if err := RenderWithMeta(&buf, sample, FormatCSV, meta); err != nil {
+		t.Fatalf("RenderWithMeta が失敗: %v", err)
+	}
+	out := buf.String()
+	// hostname 列はヘッダ末尾に追加される（既存の列順を壊さない）。
+	if !strings.HasPrefix(out, "port,status,service,severity,risk,attacks,mitigations,banner,os,os_confidence,hostname") {
+		t.Errorf("CSV ヘッダ末尾に hostname 列が無い:\n%s", out)
+	}
+	if !strings.Contains(out, "Foo.local") {
+		t.Errorf("CSV 行に hostname が無い:\n%s", out)
+	}
+}
+
 func TestRenderCSV(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sample, FormatCSV); err != nil {

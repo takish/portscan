@@ -35,10 +35,18 @@ func ParseFormat(s string) (Format, error) {
 	}
 }
 
+// Meta はポート結果以外の補助情報（mDNS 由来のホスト名・モデル等）。
+// OS 推定の手がかりや出力のホスト名表示に使う。空でも構わない。
+type Meta struct {
+	Hostname string // mDNS で得たホスト名（例: "Foo.local"）
+	Model    string // mDNS で得たデバイスモデル（例: "Macmini9,1"）
+}
+
 // HostScan は1台のホストに対するスキャン結果を表す。
 type HostScan struct {
 	Host    string           `json:"host"`
 	Results []scanner.Result `json:"ports"`
+	Meta    Meta             `json:"-"` // mDNS 由来の補助情報（出力は各レンダラが整形）
 }
 
 // resultWithRisk は1ポートの結果にリスク情報を添えた出力用 DTO。
@@ -52,15 +60,17 @@ type resultWithRisk struct {
 // scanReport は単一ホストの JSON 出力用 DTO。OS 推定はホスト単位の情報なので、
 // ポート配列を直接出力するのではなく os と ports を持つオブジェクトに包む。
 type scanReport struct {
-	OS    osdetect.Guess   `json:"os"`
-	Ports []resultWithRisk `json:"ports"`
+	Hostname string           `json:"hostname,omitempty"`
+	OS       osdetect.Guess   `json:"os"`
+	Ports    []resultWithRisk `json:"ports"`
 }
 
 // hostScanWithRisk はホスト別出力用にリスク・OS 推定情報を添えた DTO。
 type hostScanWithRisk struct {
-	Host  string           `json:"host"`
-	OS    osdetect.Guess   `json:"os"`
-	Ports []resultWithRisk `json:"ports"`
+	Host     string           `json:"host"`
+	Hostname string           `json:"hostname,omitempty"`
+	OS       osdetect.Guess   `json:"os"`
+	Ports    []resultWithRisk `json:"ports"`
 }
 
 // enrich は各結果にリスク情報を結合する。既知リスクが無いポートは Risk=nil。
@@ -77,15 +87,20 @@ func enrich(results []scanner.Result) []resultWithRisk {
 	return out
 }
 
-// Render は results を format に従って w へ書き出す。
+// Render は results を format に従って w へ書き出す（補助情報なし）。
 func Render(w io.Writer, results []scanner.Result, format Format) error {
+	return RenderWithMeta(w, results, format, Meta{})
+}
+
+// RenderWithMeta は mDNS 由来の補助情報 meta も加味して書き出す。
+func RenderWithMeta(w io.Writer, results []scanner.Result, format Format, meta Meta) error {
 	switch format {
 	case FormatJSON:
-		return renderJSON(w, results)
+		return renderJSON(w, results, meta)
 	case FormatCSV:
-		return renderCSV(w, results)
+		return renderCSV(w, results, meta)
 	default:
-		return renderText(w, results)
+		return renderText(w, results, meta)
 	}
 }
 
@@ -106,7 +121,7 @@ func renderHostText(w io.Writer, scans []HostScan) error {
 		if _, err := fmt.Fprintf(w, "=== %s ===\n", hs.Host); err != nil {
 			return err
 		}
-		if err := renderText(w, hs.Results); err != nil {
+		if err := renderText(w, hs.Results, hs.Meta); err != nil {
 			return err
 		}
 	}
@@ -117,9 +132,10 @@ func renderHostJSON(w io.Writer, scans []HostScan) error {
 	out := make([]hostScanWithRisk, len(scans))
 	for i, hs := range scans {
 		out[i] = hostScanWithRisk{
-			Host:  hs.Host,
-			OS:    osdetect.Detect(hs.Results),
-			Ports: enrich(hs.Results),
+			Host:     hs.Host,
+			Hostname: hs.Meta.Hostname,
+			OS:       osdetect.DetectWithHints(hs.Results, osdetect.Hints{Model: hs.Meta.Model}),
+			Ports:    enrich(hs.Results),
 		}
 	}
 	enc := json.NewEncoder(w)
@@ -133,9 +149,9 @@ func renderHostCSV(w io.Writer, scans []HostScan) error {
 		return err
 	}
 	for _, hs := range scans {
-		os := osdetect.Detect(hs.Results)
+		os := osdetect.DetectWithHints(hs.Results, osdetect.Hints{Model: hs.Meta.Model})
 		for _, r := range hs.Results {
-			if err := cw.Write(append([]string{hs.Host}, csvRow(r, os)...)); err != nil {
+			if err := cw.Write(append([]string{hs.Host}, csvRow(r, os, hs.Meta.Hostname)...)); err != nil {
 				return err
 			}
 		}
@@ -144,8 +160,11 @@ func renderHostCSV(w io.Writer, scans []HostScan) error {
 	return cw.Error()
 }
 
-func renderText(w io.Writer, results []scanner.Result) error {
-	if err := writeOSText(w, osdetect.Detect(results)); err != nil {
+func renderText(w io.Writer, results []scanner.Result, meta Meta) error {
+	if err := writeHostnameText(w, meta.Hostname); err != nil {
+		return err
+	}
+	if err := writeOSText(w, osdetect.DetectWithHints(results, osdetect.Hints{Model: meta.Model})); err != nil {
 		return err
 	}
 	for _, r := range results {
@@ -164,6 +183,16 @@ func renderText(w io.Writer, results []scanner.Result) error {
 		}
 	}
 	return nil
+}
+
+// writeHostnameText は mDNS で得たホスト名をヘッダ行として出力する。
+// 取得できていなければノイズになるため出力しない。
+func writeHostnameText(w io.Writer, hostname string) error {
+	if hostname == "" {
+		return nil
+	}
+	_, err := fmt.Fprintf(w, "ホスト名: %s\n", hostname)
+	return err
 }
 
 // writeOSText は推定 OS をポート一覧の前にヘッダ行として出力する。
@@ -201,26 +230,30 @@ func writeRiskText(w io.Writer, info risk.Info) error {
 	return nil
 }
 
-func renderJSON(w io.Writer, results []scanner.Result) error {
+func renderJSON(w io.Writer, results []scanner.Result, meta Meta) error {
 	// nil スライスは "null" になってしまうため空配列に正規化する。
 	ports := enrich(results)
 	if ports == nil {
 		ports = []resultWithRisk{}
 	}
-	out := scanReport{OS: osdetect.Detect(results), Ports: ports}
+	out := scanReport{
+		Hostname: meta.Hostname,
+		OS:       osdetect.DetectWithHints(results, osdetect.Hints{Model: meta.Model}),
+		Ports:    ports,
+	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
 }
 
-func renderCSV(w io.Writer, results []scanner.Result) error {
+func renderCSV(w io.Writer, results []scanner.Result, meta Meta) error {
 	cw := csv.NewWriter(w)
 	if err := cw.Write(csvHeader()); err != nil {
 		return err
 	}
-	os := osdetect.Detect(results)
+	os := osdetect.DetectWithHints(results, osdetect.Hints{Model: meta.Model})
 	for _, r := range results {
-		if err := cw.Write(csvRow(r, os)); err != nil {
+		if err := cw.Write(csvRow(r, os, meta.Hostname)); err != nil {
 			return err
 		}
 	}
@@ -229,8 +262,8 @@ func renderCSV(w io.Writer, results []scanner.Result) error {
 }
 
 func csvHeader() []string {
-	// banner / os はホスト単位・任意取得なので末尾に置き、既存の列順を保つ。
-	return []string{"port", "status", "service", "severity", "risk", "attacks", "mitigations", "banner", "os", "os_confidence"}
+	// banner / os / hostname はホスト単位・任意取得なので末尾に置き、既存の列順を保つ。
+	return []string{"port", "status", "service", "severity", "risk", "attacks", "mitigations", "banner", "os", "os_confidence", "hostname"}
 }
 
 func csvHostHeader() []string {
@@ -240,8 +273,8 @@ func csvHostHeader() []string {
 // csvRow は1結果を CSV の1行（ポート〜OS推定）に変換する。
 // リスク未登録のポートはリスク関連列を空にする。OS 推定はホスト単位の
 // 情報なので、当該ホストの全行に同じ値を繰り返し出力する。
-func csvRow(r scanner.Result, os osdetect.Guess) []string {
-	row := []string{strconv.Itoa(r.Port), r.Status.String(), r.Service, "", "", "", "", r.Banner, "", ""}
+func csvRow(r scanner.Result, os osdetect.Guess, hostname string) []string {
+	row := []string{strconv.Itoa(r.Port), r.Status.String(), r.Service, "", "", "", "", r.Banner, "", "", hostname}
 	if info, ok := risk.Lookup(r.Port); ok {
 		row[3] = info.Severity.String()
 		row[4] = info.Summary

@@ -1,5 +1,5 @@
 // Package config はよく使うスキャン設定を JSON ファイルへ保存・読込する。
-// 依存ゼロ方針を守るため YAML 等は使わず標準ライブラリの encoding/json のみ。
+// 追加依存を避けたいので YAML 等は使わず標準ライブラリの encoding/json のみ。
 //
 // 設計の要は「フラグが設定ファイルより優先」を正しく実現することにある。
 // flag パッケージは未指定でもデフォルト値を持つため、値の比較では「ユーザーが
@@ -31,6 +31,7 @@ type Config struct {
 	Discover     *bool   `json:"discover,omitempty"`
 	CIDR         *string `json:"cidr,omitempty"`
 	TUI          *bool   `json:"tui,omitempty"`
+	Mdns         *bool   `json:"mdns,omitempty"`
 }
 
 // DefaultPaths は -config 無指定時に順に探索する設定ファイルのパスを返す。
@@ -159,6 +160,11 @@ func (c Config) ApplyTo(fs *flag.FlagSet, explicit map[string]bool) error {
 	}
 	if c.TUI != nil {
 		if err := set("tui", strconv.FormatBool(*c.TUI)); err != nil {
+			return err
+		}
+	}
+	if c.Mdns != nil {
+		if err := set("mdns", strconv.FormatBool(*c.Mdns)); err != nil {
 			return err
 		}
 	}
