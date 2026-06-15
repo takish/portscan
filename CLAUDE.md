@@ -22,7 +22,7 @@ internal/
   discover/ サブネット列挙 + TCPピングでホスト探索
   report/   text/json/csv レンダラ（リスク・OS推定を結合）
   risk/     開放ポート→深刻度・攻撃・対策の静的 DB
-  osdetect/ 開放ポート＋バナー＋mDNSモデルからの軽量 OS 推定（確度付き）
+  osdetect/ 開放ポート＋バナー＋mDNSモデルからの軽量 OS 推定（確度付き）。OS/mDNSモデルからデバイス種別（スマホ/タブレット/PC/ウォッチ/TV/ネットワーク機器）も導出
   config/   スキャン設定の JSON 保存・読込（フラグ優先でマージ）
   mdns/     mDNS(Bonjour) でホスト名・デバイスモデルを収集（miekg/dns）
   sanitize/ 外部由来文字列（mDNS応答・バナー）の無害化。制御文字除去・UTF-8安全化・長さ制限を1箇所に集約
