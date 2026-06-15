@@ -202,7 +202,7 @@ func (m model) View() string {
 	}
 	// 開放ポートの顔ぶれ（＋mDNS モデル）から OS を推定して併記する。
 	if g := osdetect.DetectWithHints(shown, osdetect.Hints{Model: m.osModel}); g.Known() {
-		osLine := fmt.Sprintf("  推定OS: %s  %s", g.OS, hintStyle.Render("(確度: "+g.Confidence.String()+")"))
+		osLine := fmt.Sprintf("  %s: %s  %s", osdetect.LabelOS, g.OS, hintStyle.Render("("+osdetect.LabelConfidence+": "+g.Confidence.String()+")"))
 		b.WriteString(osLine + "\n")
 		header = true
 	}

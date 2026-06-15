@@ -201,7 +201,7 @@ func writeOSText(w io.Writer, g osdetect.Guess) error {
 	if !g.Known() {
 		return nil
 	}
-	if _, err := fmt.Fprintf(w, "推定OS: %s  (確度: %s)\n", g.OS, g.Confidence); err != nil {
+	if _, err := fmt.Fprintf(w, "%s: %s  (%s: %s)\n", osdetect.LabelOS, g.OS, osdetect.LabelConfidence, g.Confidence); err != nil {
 		return err
 	}
 	if len(g.Reasons) > 0 {
