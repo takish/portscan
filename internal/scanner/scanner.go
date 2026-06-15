@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -101,16 +102,21 @@ type Result struct {
 	Service string `json:"service"` // 推定サービス名（不明な場合は "unknown"）
 }
 
-// portResult はワーカーからコレクタへ渡す内部用の結果。
-type portResult struct {
-	port   int
-	status Status
+// Progress はストリーミングスキャン中に発生する1イベントを表す。
+// 1ポートのスキャンが終わるたびに1イベント送られ、報告対象を検出した
+// 場合のみ Found が非 nil になる。進捗バー表示と結果の逐次受信を兼ねる。
+type Progress struct {
+	Scanned int     // これまでにスキャンを終えたポート数（1〜Total）
+	Total   int     // スキャン対象ポートの総数
+	Found   *Result // 検出した報告対象ポート（無ければ nil）
 }
 
-// Scan は cfg に従ってポートをスキャンし、報告対象のポートを番号の昇順で返す。
-// 既定では open のみを返し、cfg.IncludeFiltered が true なら filtered も含める。
-// ctx のキャンセルで途中終了でき、その場合は ctx.Err() を返す。
-func Scan(ctx context.Context, cfg Config) ([]Result, error) {
+// ScanStream は cfg に従ってポートをスキャンし、進捗イベントを逐次チャネルへ
+// 流す。チャネルは全ポート走査後（または ctx キャンセル後）にクローズされる。
+// 設定不正は即座にエラーとして返す。呼び出し側はチャネルを最後まで読み切り、
+// 必要なら ctx.Err() で中断を判定する。Found は到着順（＝完了順）で、昇順では
+// ない点に注意。順序が必要な一括取得には Scan を使う。
+func ScanStream(ctx context.Context, cfg Config) (<-chan Progress, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -123,18 +129,28 @@ func Scan(ctx context.Context, cfg Config) ([]Result, error) {
 	}
 
 	ports := make(chan int)
-	found := make(chan portResult)
+	// ワーカー数ぶんバッファを持たせ、受信側が一時的に遅れてもワーカーが
+	// ブロックしにくくする（UI のレンダリング待ちでスキャンを止めない）。
+	out := make(chan Progress, workers)
 
 	// ワーカー: ports から受け取ったポートを順に接続試行する。
 	var wg sync.WaitGroup
+	var scanned int64
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for port := range ports {
 				status := probe(ctx, cfg.Host, port, cfg.Timeout)
+				n := atomic.AddInt64(&scanned, 1)
+				ev := Progress{Scanned: int(n), Total: nPorts}
 				if status == StatusOpen || (status == StatusFiltered && cfg.IncludeFiltered) {
-					found <- portResult{port: port, status: status}
+					ev.Found = &Result{Port: port, Status: status, Service: DescribePort(port)}
+				}
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
 				}
 			}
 		}()
@@ -152,15 +168,30 @@ func Scan(ctx context.Context, cfg Config) ([]Result, error) {
 		}
 	}()
 
-	// クローザー: 全ワーカー完了後に found を閉じ、収集ループを終わらせる。
+	// クローザー: 全ワーカー完了後に out を閉じ、受信ループを終わらせる。
 	go func() {
 		wg.Wait()
-		close(found)
+		close(out)
 	}()
 
-	var collected []portResult
-	for pr := range found {
-		collected = append(collected, pr)
+	return out, nil
+}
+
+// Scan は cfg に従ってポートをスキャンし、報告対象のポートを番号の昇順で返す。
+// 既定では open のみを返し、cfg.IncludeFiltered が true なら filtered も含める。
+// ctx のキャンセルで途中終了でき、その場合は ctx.Err() を返す。
+// 内部的には ScanStream を読み切って結果を集約する薄いラッパである。
+func Scan(ctx context.Context, cfg Config) ([]Result, error) {
+	out, err := ScanStream(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	var collected []Result
+	for ev := range out {
+		if ev.Found != nil {
+			collected = append(collected, *ev.Found)
+		}
 	}
 
 	// キャンセルされていた場合は不完全な結果なのでエラーを返す。
@@ -169,13 +200,9 @@ func Scan(ctx context.Context, cfg Config) ([]Result, error) {
 	}
 
 	sort.Slice(collected, func(i, j int) bool {
-		return collected[i].port < collected[j].port
+		return collected[i].Port < collected[j].Port
 	})
-	results := make([]Result, len(collected))
-	for i, pr := range collected {
-		results[i] = Result{Port: pr.port, Status: pr.status, Service: DescribePort(pr.port)}
-	}
-	return results, nil
+	return collected, nil
 }
 
 // probe は host:port へ TCP 接続を試み、状態を判定する。

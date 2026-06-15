@@ -12,6 +12,7 @@ import (
 	"github.com/takish/portscan/internal/discover"
 	"github.com/takish/portscan/internal/report"
 	"github.com/takish/portscan/internal/scanner"
+	"github.com/takish/portscan/internal/tui"
 )
 
 // options は解析済みのコマンドライン設定をまとめる。
@@ -20,6 +21,7 @@ type options struct {
 	format   report.Format
 	discover bool
 	cidr     string
+	tui      bool
 }
 
 func main() {
@@ -36,6 +38,15 @@ func main() {
 	// Ctrl-C (SIGINT) で処理を中断できるようにする。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
+
+	if opts.tui {
+		// TUI は単一ホスト専用。中断は画面内の q / Ctrl-C で行う。
+		if err := tui.Run(ctx, opts.cfg); err != nil {
+			fmt.Fprintln(os.Stderr, "TUI 失敗:", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	if opts.discover {
 		runDiscover(ctx, opts)
@@ -119,9 +130,15 @@ func parseFlags(args []string) (options, error) {
 	showFiltered := fs.Bool("show-filtered", false, "filtered（タイムアウト）ポートも表示する")
 	discoverMode := fs.Bool("discover", false, "同一セグメントの生存ホストを探索してスキャンする")
 	cidr := fs.String("cidr", "", "探索するサブネット (例: 192.168.1.0/24)。未指定なら自動検出")
+	tuiMode := fs.Bool("tui", false, "インタラクティブな TUI 画面でスキャンする（単一ホスト専用）")
 
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
+	}
+
+	// TUI は画面表示専用で、複数ホストのグループ出力とは両立しない。
+	if *tuiMode && *discoverMode {
+		return options{}, fmt.Errorf("-tui と -discover は同時に指定できません")
 	}
 
 	format, err := report.ParseFormat(*formatStr)
@@ -141,5 +158,6 @@ func parseFlags(args []string) (options, error) {
 		format:   format,
 		discover: *discoverMode,
 		cidr:     *cidr,
+		tui:      *tuiMode,
 	}, nil
 }
