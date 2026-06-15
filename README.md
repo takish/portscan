@@ -14,6 +14,7 @@
 - 開放ポートに既知リスクがあれば、深刻度・代表攻撃・対策を**常に併記**（防御目的）
 - `-banner` で開放ポートのバナーを取得し、サービス/バージョンを推定（HTTP/TLS 対応）
 - 開放ポートの顔ぶれとバナーから OS を軽量推定し、確度付きで**常に併記**（root 不要）
+- よく使うスキャン設定を JSON で保存・読込（`-config` / `-save-config`。フラグで上書き可能）
 
 ## 必要環境
 
@@ -77,6 +78,8 @@ JSON で結果だけをファイルに保存（進捗は画面に残る）:
 | `-discover` | 同一セグメントの生存ホストを探索してスキャン | `false` |
 | `-cidr` | 探索するサブネット (例 `192.168.1.0/24`)。未指定で自動検出 | （自動） |
 | `-tui` | インタラクティブな TUI 画面でスキャン（単一ホスト専用） | `false` |
+| `-config` | 設定ファイル(JSON)のパス。未指定なら自動探索 | （自動） |
+| `-save-config` | 現在の実効設定を指定パスへ JSON で書き出す | （無効） |
 
 ### TUI モード
 
@@ -102,6 +105,41 @@ JSON で結果だけをファイルに保存（進捗は画面に残る）:
 取得したバナーは各フォーマットに併記される（text はサブ行、JSON は `banner` フィールド、CSV は `banner` 列）。
 
 > バナーは将来の OS 判定（軽量ヒューリスティック）やリスク精度向上の材料にもなる。
+
+### 設定ファイル（JSON）
+
+よく使うスキャン設定を JSON ファイルに保存して使い回せる。依存を増やさないため
+形式は JSON のみ（標準ライブラリで完結）。
+
+```bash
+# いまのフラグ内容を設定ファイルに書き出す
+./portscan -host 10.0.0.1 -start 1 -end 1024 -threads 200 -timeout 1s -save-config myscan.json
+
+# 設定ファイルを読み込んでスキャン
+./portscan -config myscan.json
+
+# 設定ファイルをベースに、一部だけフラグで上書き（フラグが優先）
+./portscan -config myscan.json -host 10.0.0.2
+```
+
+- **読み込み順**: `-config` で明示指定 → 無指定なら `./portscan.json` → `~/.config/portscan/config.json`（macOS は `~/Library/Application Support/portscan/config.json`）を順に自動探索
+- **優先順位**: コマンドラインフラグ ＞ 設定ファイル ＞ フラグ既定値。明示的に渡したフラグだけが設定ファイルを上書きする
+- **保存**: `-save-config <path>` で実効設定を書き出す（そのままスキャンも継続）。`timeout` は `"2s"` のような読みやすい文字列で保存される
+- 設定ファイルに**未知のキー**があるとエラーになる（typo を黙って無視しない）
+
+設定ファイルの例:
+
+```json
+{
+  "host": "10.0.0.1",
+  "start": 1,
+  "end": 1024,
+  "threads": 200,
+  "timeout": "1s",
+  "format": "json",
+  "banner": true
+}
+```
 
 ### OS 推定（軽量ヒューリスティック）
 
@@ -193,6 +231,9 @@ localhost で 1001 ポートをスキャンした参考値:
     ├── osdetect/
     │   ├── osdetect.go          # 開放ポート＋バナーからの軽量 OS 推定
     │   └── osdetect_test.go     # テスト
+    ├── config/
+    │   ├── config.go            # スキャン設定の JSON 保存・読込（フラグ優先のマージ）
+    │   └── config_test.go       # テスト
     └── tui/
         ├── tui.go               # bubbletea によるインタラクティブ画面
         └── tui_test.go          # Model-Update-View のロジックテスト
