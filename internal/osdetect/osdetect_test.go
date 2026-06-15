@@ -206,6 +206,72 @@ func TestDeviceClass_OmitsUnknownInGuessJSON(t *testing.T) {
 	}
 }
 
+func TestTTLFamily(t *testing.T) {
+	cases := []struct {
+		recv   int
+		wantOS string
+		wantOK bool
+	}{
+		{64, "Linux/Unix", true}, // ホップ0（同一ホスト/隣接）
+		{60, "Linux/Unix", true}, // 4 ホップ減衰した Unix系
+		{128, "Windows", true},   // ホップ0 の Windows
+		{120, "Windows", true},   // 8 ホップ減衰した Windows
+		{255, "ネットワーク機器", true},  // ホップ0 の NW機器
+		{250, "ネットワーク機器", true},  // 5 ホップ減衰
+		{0, "", false},           // 未取得
+		{-1, "", false},          // 異常値
+		{200, "", false},         // 128 超・255 から55ホップ → 判別不能
+		{30, "", false},          // 64-30=34 ホップ → 閾値超で判別不能
+	}
+	for _, c := range cases {
+		os, ok := ttlFamily(c.recv)
+		if ok != c.wantOK || (ok && os != c.wantOS) {
+			t.Errorf("ttlFamily(%d)=%q,%v want %q,%v", c.recv, os, ok, c.wantOS, c.wantOK)
+		}
+	}
+}
+
+func TestApplyTTL_NoBaseAdoptsFamily(t *testing.T) {
+	// スキャンから何も分からないとき、TTL 系統を medium で採用する。
+	g := DetectWithHints([]scanner.Result{open(12345, "")}, Hints{TTL: 128})
+	if g.OS != "Windows" || g.Confidence != ConfidenceMedium {
+		t.Errorf("TTL からの採用が不正: %+v", g)
+	}
+	if g.Device != DeviceComputer {
+		t.Errorf("Device=%v, want PC", g.Device)
+	}
+}
+
+func TestApplyTTL_AgreementBoostsConfidence(t *testing.T) {
+	// ポート推定（SSH のみ→Linux/Unix low）と TTL=64 が一致 → 確度が上がる。
+	base := Detect([]scanner.Result{open(22, "")})
+	withTTL := DetectWithHints([]scanner.Result{open(22, "")}, Hints{TTL: 64})
+	if withTTL.Confidence <= base.Confidence {
+		t.Errorf("一致時に確度が上がっていない: base=%s with=%s", base.Confidence, withTTL.Confidence)
+	}
+}
+
+func TestApplyTTL_ConflictKeepsOS(t *testing.T) {
+	// Windows ポート群（OS=Windows）に Unix 系 TTL=64 が来ても OS は変えない。
+	g := DetectWithHints([]scanner.Result{open(135, ""), open(445, ""), open(3389, "")}, Hints{TTL: 64})
+	if g.OS != "Windows" {
+		t.Errorf("不一致 TTL で OS が変わった: %+v", g)
+	}
+	// 不一致の所見が根拠に残る。
+	joined := strings.Join(g.Reasons, " ")
+	if !strings.Contains(joined, "不一致") {
+		t.Errorf("不一致の根拠が残っていない: %v", g.Reasons)
+	}
+}
+
+func TestApplyTTL_ModelWinsOverTTL(t *testing.T) {
+	// mDNS model は最優先。矛盾する TTL があっても model の推定を維持する。
+	g := DetectWithHints([]scanner.Result{open(22, "")}, Hints{Model: "iPhone15,2", TTL: 128})
+	if g.OS != "iOS" || g.Device != DevicePhone {
+		t.Errorf("model が TTL に負けた: %+v", g)
+	}
+}
+
 func TestConfidence_JSONRoundTrip(t *testing.T) {
 	for _, c := range []Confidence{ConfidenceLow, ConfidenceMedium, ConfidenceHigh} {
 		data, err := json.Marshal(c)

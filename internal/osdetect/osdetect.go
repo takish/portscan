@@ -213,6 +213,85 @@ var portSignals = map[int]portSignal{
 // Hints は開放ポート以外の補助的な判定材料。mDNS 等から得た情報を渡す。
 type Hints struct {
 	Model string // mDNS _device-info の model（例: "Macmini9,1"）
+	TTL   int    // ICMP echo 応答の受信 TTL（0 なら未取得）
+}
+
+// ttlFamily は ICMP 応答の受信 TTL から送信元ホストの OS 系統を推定する。
+// OS の初期 TTL は 64(Unix系) / 128(Windows) / 255(ネットワーク機器) が代表的で、
+// 経路の各ホップで 1 ずつ減るため「受信値以上で最も近い初期値」を採用する。
+// ホップ数が過大（同一/近接セグメントの想定を超える）な場合は判別不能とする。
+func ttlFamily(recv int) (os string, ok bool) {
+	if recv <= 0 {
+		return "", false
+	}
+	cands := []struct {
+		init int
+		os   string
+	}{
+		{64, "Linux/Unix"},
+		{128, "Windows"},
+		{255, "ネットワーク機器"},
+	}
+	best := ""
+	bestHops := 1 << 30
+	for _, c := range cands {
+		if recv <= c.init && c.init-recv < bestHops {
+			bestHops, best = c.init-recv, c.os
+		}
+	}
+	// ホップ数が大きすぎる推定は信頼できないので捨てる（誤分類の防止）。
+	if best == "" || bestHops > 32 {
+		return "", false
+	}
+	return best, true
+}
+
+// ttlMatchesOS は推定済み OS 名が TTL 由来の系統 fam と整合するかを返す。
+func ttlMatchesOS(osName, fam string) bool {
+	switch fam {
+	case "Windows":
+		return osName == "Windows"
+	case "ネットワーク機器":
+		return strings.HasPrefix(osName, "ネットワーク機器")
+	case "Linux/Unix":
+		// Unix 系全般（Linux 各種・macOS・*BSD・Apple モバイル OS）。
+		switch osName {
+		case "Linux/Unix", "macOS", "FreeBSD", "OpenBSD", "NetBSD",
+			"iOS", "iPadOS", "watchOS", "tvOS":
+			return true
+		}
+		return strings.HasPrefix(osName, "Linux")
+	}
+	return false
+}
+
+// applyTTL は TTL 由来の系統情報を base の推定へ反映する。
+//   - スキャンから何も分からなければ TTL 系統を medium 確度で採用する
+//   - 既存推定と一致すれば確度を一段引き上げ、根拠を補強する
+//   - 矛盾する場合は OS は変えず、所見だけ根拠に残して判断材料にする
+func applyTTL(base Guess, recvTTL int) Guess {
+	fam, ok := ttlFamily(recvTTL)
+	if !ok {
+		return base
+	}
+	reason := fmt.Sprintf("ICMP TTL=%d → %s系", recvTTL, fam)
+	if !base.Known() {
+		return Guess{
+			OS:         fam,
+			Device:     deviceFromOS(fam),
+			Confidence: ConfidenceMedium,
+			Reasons:    []string{reason},
+		}
+	}
+	if ttlMatchesOS(base.OS, fam) {
+		if base.Confidence < ConfidenceHigh {
+			base.Confidence++
+		}
+		base.Reasons = append(base.Reasons, reason)
+	} else {
+		base.Reasons = append(base.Reasons, reason+"（ポート推定と不一致）")
+	}
+	return base
 }
 
 // modelHint はデバイスモデル文字列から OS を推定する。
@@ -269,11 +348,12 @@ func Detect(results []scanner.Result) Guess {
 
 // DetectWithHints は補助情報 h も加味して OS を推定する。
 // mDNS のモデル情報は最も確実な手がかりなので、あれば最優先で採用する。
+// それ以外はスキャン由来の推定に TTL 系統ヒントを重ねて補強する。
 func DetectWithHints(results []scanner.Result, h Hints) Guess {
 	if g, ok := modelHint(h.Model); ok {
 		return g
 	}
-	return detectFromScan(results)
+	return applyTTL(detectFromScan(results), h.TTL)
 }
 
 // detectFromScan は開放ポートとバナーのみから OS を推定する内部実装。

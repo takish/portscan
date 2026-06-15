@@ -40,6 +40,7 @@ func ParseFormat(s string) (Format, error) {
 type Meta struct {
 	Hostname string // mDNS で得たホスト名（例: "Foo.local"）
 	Model    string // mDNS で得たデバイスモデル（例: "Macmini9,1"）
+	TTL      int    // ICMP echo 応答の受信 TTL（OS 系統推定のヒント。0 なら未取得）
 }
 
 // HostScan は1台のホストに対するスキャン結果を表す。
@@ -134,7 +135,7 @@ func renderHostJSON(w io.Writer, scans []HostScan) error {
 		out[i] = hostScanWithRisk{
 			Host:     hs.Host,
 			Hostname: hs.Meta.Hostname,
-			OS:       osdetect.DetectWithHints(hs.Results, osdetect.Hints{Model: hs.Meta.Model}),
+			OS:       osdetect.DetectWithHints(hs.Results, osdetect.Hints{Model: hs.Meta.Model, TTL: hs.Meta.TTL}),
 			Ports:    enrich(hs.Results),
 		}
 	}
@@ -149,7 +150,7 @@ func renderHostCSV(w io.Writer, scans []HostScan) error {
 		return err
 	}
 	for _, hs := range scans {
-		os := osdetect.DetectWithHints(hs.Results, osdetect.Hints{Model: hs.Meta.Model})
+		os := osdetect.DetectWithHints(hs.Results, osdetect.Hints{Model: hs.Meta.Model, TTL: hs.Meta.TTL})
 		for _, r := range hs.Results {
 			if err := cw.Write(append([]string{hs.Host}, csvRow(r, os, hs.Meta.Hostname)...)); err != nil {
 				return err
@@ -164,7 +165,7 @@ func renderText(w io.Writer, results []scanner.Result, meta Meta) error {
 	if err := writeHostnameText(w, meta.Hostname); err != nil {
 		return err
 	}
-	if err := writeOSText(w, osdetect.DetectWithHints(results, osdetect.Hints{Model: meta.Model})); err != nil {
+	if err := writeOSText(w, osdetect.DetectWithHints(results, osdetect.Hints{Model: meta.Model, TTL: meta.TTL})); err != nil {
 		return err
 	}
 	for _, r := range results {
@@ -245,7 +246,7 @@ func renderJSON(w io.Writer, results []scanner.Result, meta Meta) error {
 	}
 	out := scanReport{
 		Hostname: meta.Hostname,
-		OS:       osdetect.DetectWithHints(results, osdetect.Hints{Model: meta.Model}),
+		OS:       osdetect.DetectWithHints(results, osdetect.Hints{Model: meta.Model, TTL: meta.TTL}),
 		Ports:    ports,
 	}
 	enc := json.NewEncoder(w)
@@ -258,7 +259,7 @@ func renderCSV(w io.Writer, results []scanner.Result, meta Meta) error {
 	if err := cw.Write(csvHeader()); err != nil {
 		return err
 	}
-	os := osdetect.DetectWithHints(results, osdetect.Hints{Model: meta.Model})
+	os := osdetect.DetectWithHints(results, osdetect.Hints{Model: meta.Model, TTL: meta.TTL})
 	for _, r := range results {
 		if err := cw.Write(csvRow(r, os, meta.Hostname)); err != nil {
 			return err

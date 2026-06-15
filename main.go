@@ -34,7 +34,7 @@ func main() {
 	if opts.TUI {
 		// TUI は単一ホスト専用。中断は画面内の q / Ctrl-C で行う。
 		// -mdns 指定時はスキャンと並行で mDNS を収集しホスト名等を併記する。
-		if err := tui.Run(ctx, opts.Cfg, opts.Mdns); err != nil {
+		if err := tui.Run(ctx, opts.Cfg, opts.Mdns, opts.OSFingerprint); err != nil {
 			fmt.Fprintln(os.Stderr, "TUI 失敗:", err)
 			os.Exit(1)
 		}
@@ -54,21 +54,22 @@ func main() {
 
 // snapshot は実効設定値を config.Config に詰める（-save-config 用）。
 // timeout は人間が読みやすいよう duration 文字列（"2s" 等）で保存する。
-func snapshot(host string, start, end, threads int, timeout time.Duration, format string, showFiltered, banner, discover bool, cidr string, tui, mdns bool) config.Config {
+func snapshot(host string, start, end, threads int, timeout time.Duration, format string, showFiltered, banner, discover bool, cidr string, tui, mdns, osFingerprint bool) config.Config {
 	timeoutStr := timeout.String()
 	return config.Config{
-		Host:         &host,
-		Start:        &start,
-		End:          &end,
-		Threads:      &threads,
-		Timeout:      &timeoutStr,
-		Format:       &format,
-		ShowFiltered: &showFiltered,
-		Banner:       &banner,
-		Discover:     &discover,
-		CIDR:         &cidr,
-		TUI:          &tui,
-		Mdns:         &mdns,
+		Host:          &host,
+		Start:         &start,
+		End:           &end,
+		Threads:       &threads,
+		Timeout:       &timeoutStr,
+		Format:        &format,
+		ShowFiltered:  &showFiltered,
+		Banner:        &banner,
+		Discover:      &discover,
+		CIDR:          &cidr,
+		TUI:           &tui,
+		Mdns:          &mdns,
+		OSFingerprint: &osFingerprint,
 	}
 }
 
@@ -88,6 +89,7 @@ func parseFlags(args []string) (app.Options, error) {
 	cidr := fs.String("cidr", "", "探索するサブネット (例: 192.168.1.0/24)。未指定なら自動検出")
 	tuiMode := fs.Bool("tui", false, "インタラクティブな TUI 画面でスキャンする（単一ホスト専用）")
 	mdnsMode := fs.Bool("mdns", false, "mDNS(Bonjour) でホスト名・デバイスモデルを収集して併記する（同一セグメント限定。-discover では自動有効）")
+	osFingerprint := fs.Bool("os-fingerprint", false, "ICMP echo の応答 TTL から OS 系統を推定して併記する（root 不要。ICMP 不通先では無効）")
 	configPath := fs.String("config", "", "設定ファイル(JSON)のパス。未指定なら ./portscan.json 等を自動探索")
 	saveConfigPath := fs.String("save-config", "", "現在の実効設定を指定パスへ JSON で書き出す")
 
@@ -112,7 +114,7 @@ func parseFlags(args []string) (app.Options, error) {
 
 	// 実効設定の書き出しが要求されていれば保存する（スキャンは継続する）。
 	if *saveConfigPath != "" {
-		if err := config.Save(*saveConfigPath, snapshot(*host, *start, *end, *threads, *timeout, *formatStr, *showFiltered, *banner, *discoverMode, *cidr, *tuiMode, *mdnsMode)); err != nil {
+		if err := config.Save(*saveConfigPath, snapshot(*host, *start, *end, *threads, *timeout, *formatStr, *showFiltered, *banner, *discoverMode, *cidr, *tuiMode, *mdnsMode, *osFingerprint)); err != nil {
 			return app.Options{}, err
 		}
 		fmt.Fprintf(os.Stderr, "設定を書き出しました: %s\n", *saveConfigPath)
@@ -138,10 +140,11 @@ func parseFlags(args []string) (app.Options, error) {
 			IncludeFiltered: *showFiltered,
 			GrabBanner:      *banner,
 		},
-		Format:   format,
-		Discover: *discoverMode,
-		CIDR:     *cidr,
-		TUI:      *tuiMode,
-		Mdns:     *mdnsMode,
+		Format:        format,
+		Discover:      *discoverMode,
+		CIDR:          *cidr,
+		TUI:           *tuiMode,
+		Mdns:          *mdnsMode,
+		OSFingerprint: *osFingerprint,
 	}, nil
 }
