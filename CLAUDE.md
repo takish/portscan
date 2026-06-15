@@ -15,8 +15,9 @@ go build -o portscan .  # Makefile 不使用の場合
 ## アーキテクチャ
 
 ```
-main.go                    フラグ解析・モード振り分け（CLI エントリポイント）
+main.go                    フラグ解析・モード振り分け（薄い CLI エントリポイント）
 internal/
+  app/      スキャン実行フロー（単一/ディスカバリ）のオーケストレーション。出力先を io.Writer で注入しテスト可能にする
   scanner/  net.Dialer + worker pool でポートスキャン（banner.go: バナー取得）
   discover/ サブネット列挙 + TCPピングでホスト探索
   report/   text/json/csv レンダラ（リスク・OS推定を結合）
