@@ -22,6 +22,7 @@ internal/
   report/   text/json/csv レンダラ（リスク・OS推定を結合）
   risk/     開放ポート→深刻度・攻撃・対策の静的 DB
   osdetect/ 開放ポート＋バナーからの軽量 OS 推定（確度付き）
+  config/   スキャン設定の JSON 保存・読込（フラグ優先でマージ）
   tui/      bubbletea による TUI モード
 ```
 
@@ -43,10 +44,13 @@ internal/
 | `-discover` | false | ホストディスカバリモード |
 | `-cidr` | 自動 | サブネット指定 |
 | `-tui` | false | TUI インタラクティブモード |
+| `-config` | 自動 | 設定ファイル(JSON)のパス。未指定なら自動探索 |
+| `-save-config` | 無効 | 実効設定を JSON で書き出す |
 
 ## 制約
 
 - `-tui` と `-discover` は同時指定不可
-- スキャン中核（scanner/discover/report/risk/osdetect）は標準ライブラリのみ。外部依存を増やさない
+- スキャン中核（scanner/discover/report/risk/osdetect/config）は標準ライブラリのみ。外部依存を増やさない
 - 単一ホストの JSON 出力は `{ "os": {...}, "ports": [...] }` のオブジェクト（OS推定がホスト単位のため）
+- 設定の優先順位は「コマンドラインフラグ ＞ 設定ファイル ＞ フラグ既定値」。`flag.Visit` で明示指定フラグを検出して上書き判定する
 - 進捗・サマリは stderr、スキャン結果は stdout（パイプ連携のため）

@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/takish/portscan/internal/config"
 	"github.com/takish/portscan/internal/discover"
 	"github.com/takish/portscan/internal/report"
 	"github.com/takish/portscan/internal/scanner"
@@ -117,6 +118,25 @@ func runDiscover(ctx context.Context, opts options) {
 	}
 }
 
+// snapshot は実効設定値を config.Config に詰める（-save-config 用）。
+// timeout は人間が読みやすいよう duration 文字列（"2s" 等）で保存する。
+func snapshot(host string, start, end, threads int, timeout time.Duration, format string, showFiltered, banner, discover bool, cidr string, tui bool) config.Config {
+	timeoutStr := timeout.String()
+	return config.Config{
+		Host:         &host,
+		Start:        &start,
+		End:          &end,
+		Threads:      &threads,
+		Timeout:      &timeoutStr,
+		Format:       &format,
+		ShowFiltered: &showFiltered,
+		Banner:       &banner,
+		Discover:     &discover,
+		CIDR:         &cidr,
+		TUI:          &tui,
+	}
+}
+
 // parseFlags はコマンドライン引数を解析して options を組み立てる。
 func parseFlags(args []string) (options, error) {
 	fs := flag.NewFlagSet("portscan", flag.ContinueOnError)
@@ -132,9 +152,34 @@ func parseFlags(args []string) (options, error) {
 	discoverMode := fs.Bool("discover", false, "同一セグメントの生存ホストを探索してスキャンする")
 	cidr := fs.String("cidr", "", "探索するサブネット (例: 192.168.1.0/24)。未指定なら自動検出")
 	tuiMode := fs.Bool("tui", false, "インタラクティブな TUI 画面でスキャンする（単一ホスト専用）")
+	configPath := fs.String("config", "", "設定ファイル(JSON)のパス。未指定なら ./portscan.json 等を自動探索")
+	saveConfigPath := fs.String("save-config", "", "現在の実効設定を指定パスへ JSON で書き出す")
 
 	if err := fs.Parse(args); err != nil {
 		return options{}, err
+	}
+
+	// 設定ファイルを読み込み、明示指定されていないフラグにのみ適用する。
+	// 優先順位は「コマンドラインフラグ ＞ 設定ファイル ＞ フラグ既定値」。
+	explicit := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
+	cfgFile, srcPath, err := config.Load(*configPath)
+	if err != nil {
+		return options{}, err
+	}
+	if err := cfgFile.ApplyTo(fs, explicit); err != nil {
+		return options{}, err
+	}
+	if srcPath != "" {
+		fmt.Fprintf(os.Stderr, "設定ファイルを読み込みました: %s\n", srcPath)
+	}
+
+	// 実効設定の書き出しが要求されていれば保存する（スキャンは継続する）。
+	if *saveConfigPath != "" {
+		if err := config.Save(*saveConfigPath, snapshot(*host, *start, *end, *threads, *timeout, *formatStr, *showFiltered, *banner, *discoverMode, *cidr, *tuiMode)); err != nil {
+			return options{}, err
+		}
+		fmt.Fprintf(os.Stderr, "設定を書き出しました: %s\n", *saveConfigPath)
 	}
 
 	// TUI は画面表示専用で、複数ホストのグループ出力とは両立しない。
