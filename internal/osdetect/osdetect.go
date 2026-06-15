@@ -66,16 +66,92 @@ func (c *Confidence) UnmarshalJSON(data []byte) error {
 const (
 	LabelOS         = "推定OS"
 	LabelConfidence = "確度"
+	LabelDevice     = "種別"
 )
 
 // OSUnknown は推定できなかった場合の OS 名。
 const OSUnknown = "unknown"
 
+// DeviceClass はホストのデバイス種別。mDNS model（最も正確）または推定 OS から導出する。
+type DeviceClass int
+
+const (
+	DeviceUnknown  DeviceClass = iota // 判別不能
+	DevicePhone                       // スマートフォン
+	DeviceTablet                      // タブレット
+	DeviceComputer                    // PC（デスクトップ/ノート/サーバを含む）
+	DeviceWatch                       // スマートウォッチ
+	DeviceTV                          // テレビ/セットトップボックス
+	DeviceNetwork                     // ルーター等のネットワーク機器
+)
+
+// String は種別の表示用文字列（日本語）を返す。表示語彙は osdetect に集約する。
+func (d DeviceClass) String() string {
+	switch d {
+	case DevicePhone:
+		return "スマートフォン"
+	case DeviceTablet:
+		return "タブレット"
+	case DeviceComputer:
+		return "PC"
+	case DeviceWatch:
+		return "スマートウォッチ"
+	case DeviceTV:
+		return "TV"
+	case DeviceNetwork:
+		return "ネットワーク機器"
+	default:
+		return "不明"
+	}
+}
+
+// Known は種別を判別できたかを返す。
+func (d DeviceClass) Known() bool { return d != DeviceUnknown }
+
+// deviceKeys は DeviceClass と JSON 表現（安定した英語キー）の対応。
+var deviceKeys = map[DeviceClass]string{
+	DevicePhone:    "phone",
+	DeviceTablet:   "tablet",
+	DeviceComputer: "computer",
+	DeviceWatch:    "watch",
+	DeviceTV:       "tv",
+	DeviceNetwork:  "network",
+}
+
+// MarshalJSON は DeviceClass を安定した英語キーで出力する（表示用 String とは別系統）。
+func (d DeviceClass) MarshalJSON() ([]byte, error) {
+	s, ok := deviceKeys[d]
+	if !ok {
+		s = "unknown"
+	}
+	return json.Marshal(s)
+}
+
+// UnmarshalJSON は英語キーから DeviceClass を復元する。
+func (d *DeviceClass) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	if s == "unknown" {
+		*d = DeviceUnknown
+		return nil
+	}
+	for k, v := range deviceKeys {
+		if v == s {
+			*d = k
+			return nil
+		}
+	}
+	return fmt.Errorf("不明な DeviceClass: %q", s)
+}
+
 // Guess は1ホストに対する OS 推定の結果を表す。
 type Guess struct {
-	OS         string     `json:"os"`                // 推定 OS（不明なら "unknown"）
-	Confidence Confidence `json:"confidence"`        // 推定の確度
-	Reasons    []string   `json:"reasons,omitempty"` // 判定根拠（人間向け）
+	OS         string      `json:"os"`                // 推定 OS（不明なら "unknown"）
+	Device     DeviceClass `json:"device,omitempty"`  // デバイス種別（判別不能なら省略）
+	Confidence Confidence  `json:"confidence"`        // 推定の確度
+	Reasons    []string    `json:"reasons,omitempty"` // 判定根拠（人間向け）
 }
 
 // Known は何らかの手がかりから OS を推定できたかを返す。
@@ -149,17 +225,40 @@ func modelHint(model string) (Guess, bool) {
 	reason := []string{fmt.Sprintf("mDNS model=%q", model)}
 	switch {
 	case strings.HasPrefix(m, "iphone"):
-		return Guess{OS: "iOS", Confidence: ConfidenceHigh, Reasons: reason}, true
+		return Guess{OS: "iOS", Device: DevicePhone, Confidence: ConfidenceHigh, Reasons: reason}, true
 	case strings.HasPrefix(m, "ipad"):
-		return Guess{OS: "iPadOS", Confidence: ConfidenceHigh, Reasons: reason}, true
+		return Guess{OS: "iPadOS", Device: DeviceTablet, Confidence: ConfidenceHigh, Reasons: reason}, true
 	case strings.HasPrefix(m, "watch"):
-		return Guess{OS: "watchOS", Confidence: ConfidenceHigh, Reasons: reason}, true
+		return Guess{OS: "watchOS", Device: DeviceWatch, Confidence: ConfidenceHigh, Reasons: reason}, true
 	case strings.HasPrefix(m, "appletv"):
-		return Guess{OS: "tvOS", Confidence: ConfidenceHigh, Reasons: reason}, true
+		return Guess{OS: "tvOS", Device: DeviceTV, Confidence: ConfidenceHigh, Reasons: reason}, true
 	case strings.HasPrefix(m, "mac") || strings.HasPrefix(m, "imac") || strings.HasPrefix(m, "macbook"):
-		return Guess{OS: "macOS", Confidence: ConfidenceHigh, Reasons: reason}, true
+		return Guess{OS: "macOS", Device: DeviceComputer, Confidence: ConfidenceHigh, Reasons: reason}, true
 	}
 	return Guess{}, false
+}
+
+// deviceFromOS は推定 OS 名から最も妥当なデバイス種別を導出する。
+// mDNS model が無いホスト向けのフォールバックで、種別の確度は OS 推定の確度に従う。
+func deviceFromOS(os string) DeviceClass {
+	switch {
+	case os == "iOS":
+		return DevicePhone
+	case os == "iPadOS":
+		return DeviceTablet
+	case os == "watchOS":
+		return DeviceWatch
+	case os == "tvOS":
+		return DeviceTV
+	case os == "macOS", os == "Windows", os == "FreeBSD", os == "OpenBSD", os == "NetBSD":
+		return DeviceComputer
+	case strings.HasPrefix(os, "Linux"):
+		return DeviceComputer
+	case strings.HasPrefix(os, "ネットワーク機器"):
+		return DeviceNetwork
+	default:
+		return DeviceUnknown
+	}
 }
 
 // Detect は開放ポート（と取得済みバナー）から OS を推定する。
@@ -197,6 +296,7 @@ func detectFromScan(results []scanner.Result) Guess {
 			if strings.Contains(b, h.sub) {
 				return Guess{
 					OS:         h.os,
+					Device:     deviceFromOS(h.os),
 					Confidence: ConfidenceHigh,
 					Reasons:    []string{fmt.Sprintf("バナーに %q を検出", h.sub)},
 				}
@@ -239,5 +339,5 @@ func detectFromScan(results []scanner.Result) Guess {
 
 	rs := reasons[bestOS]
 	sort.Strings(rs)
-	return Guess{OS: bestOS, Confidence: conf, Reasons: rs}
+	return Guess{OS: bestOS, Device: deviceFromOS(bestOS), Confidence: conf, Reasons: rs}
 }

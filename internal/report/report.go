@@ -201,6 +201,13 @@ func writeOSText(w io.Writer, g osdetect.Guess) error {
 	if !g.Known() {
 		return nil
 	}
+	// 種別はユーザーの主関心（スマホ/PC 等）なので OS 行の前に出す。
+	// 確度は OS 推定と共通のため OS 行にのみ添え、重複表示を避ける。
+	if g.Device.Known() {
+		if _, err := fmt.Fprintf(w, "%s: %s\n", osdetect.LabelDevice, g.Device); err != nil {
+			return err
+		}
+	}
 	if _, err := fmt.Fprintf(w, "%s: %s  (%s: %s)\n", osdetect.LabelOS, g.OS, osdetect.LabelConfidence, g.Confidence); err != nil {
 		return err
 	}
@@ -263,7 +270,7 @@ func renderCSV(w io.Writer, results []scanner.Result, meta Meta) error {
 
 func csvHeader() []string {
 	// banner / os / hostname はホスト単位・任意取得なので末尾に置き、既存の列順を保つ。
-	return []string{"port", "status", "service", "severity", "risk", "attacks", "mitigations", "banner", "os", "os_confidence", "hostname"}
+	return []string{"port", "status", "service", "severity", "risk", "attacks", "mitigations", "banner", "os", "os_confidence", "hostname", "device"}
 }
 
 func csvHostHeader() []string {
@@ -274,7 +281,7 @@ func csvHostHeader() []string {
 // リスク未登録のポートはリスク関連列を空にする。OS 推定はホスト単位の
 // 情報なので、当該ホストの全行に同じ値を繰り返し出力する。
 func csvRow(r scanner.Result, os osdetect.Guess, hostname string) []string {
-	row := []string{strconv.Itoa(r.Port), r.Status.String(), r.Service, "", "", "", "", r.Banner, "", "", hostname}
+	row := []string{strconv.Itoa(r.Port), r.Status.String(), r.Service, "", "", "", "", r.Banner, "", "", hostname, ""}
 	if info, ok := risk.Lookup(r.Port); ok {
 		row[3] = info.Severity.String()
 		row[4] = info.Summary
@@ -284,6 +291,9 @@ func csvRow(r scanner.Result, os osdetect.Guess, hostname string) []string {
 	if os.Known() {
 		row[8] = os.OS
 		row[9] = os.Confidence.String()
+		if os.Device.Known() {
+			row[11] = os.Device.String()
+		}
 	}
 	return row
 }

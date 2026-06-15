@@ -200,8 +200,12 @@ func (m model) View() string {
 		b.WriteString("  " + hintStyle.Render("ホスト名: "+m.hostname) + "\n")
 		header = true
 	}
-	// 開放ポートの顔ぶれ（＋mDNS モデル）から OS を推定して併記する。
+	// 開放ポートの顔ぶれ（＋mDNS モデル）から OS と種別を推定して併記する。
 	if g := osdetect.DetectWithHints(shown, osdetect.Hints{Model: m.osModel}); g.Known() {
+		// 種別はユーザーの主関心なので OS 行の前に出す（確度は OS 行に集約）。
+		if g.Device.Known() {
+			b.WriteString(fmt.Sprintf("  %s: %s\n", osdetect.LabelDevice, g.Device))
+		}
 		osLine := fmt.Sprintf("  %s: %s  %s", osdetect.LabelOS, g.OS, hintStyle.Render("("+osdetect.LabelConfidence+": "+g.Confidence.String()+")"))
 		b.WriteString(osLine + "\n")
 		header = true

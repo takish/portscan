@@ -2,6 +2,7 @@ package osdetect
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/takish/portscan/internal/scanner"
@@ -113,6 +114,95 @@ func TestModelHint(t *testing.T) {
 	}
 	if _, ok := modelHint("LinuxBox"); ok {
 		t.Error("非 Apple model で ok=true になった")
+	}
+}
+
+func TestModelHint_Device(t *testing.T) {
+	// mDNS model からは OS だけでなく種別も確定できる（最も正確な手がかり）。
+	cases := map[string]DeviceClass{
+		"iPhone15,2":     DevicePhone,
+		"iPad13,1":       DeviceTablet,
+		"Watch6,1":       DeviceWatch,
+		"AppleTV11,1":    DeviceTV,
+		"MacBookPro18,3": DeviceComputer,
+		"Macmini9,1":     DeviceComputer,
+	}
+	for model, want := range cases {
+		g, ok := modelHint(model)
+		if !ok || g.Device != want {
+			t.Errorf("modelHint(%q).Device=%v(ok=%v), want %v", model, g.Device, ok, want)
+		}
+	}
+}
+
+func TestDeviceFromOS(t *testing.T) {
+	// mDNS model が無いホストは OS 名から種別をフォールバック導出する。
+	cases := map[string]DeviceClass{
+		"iOS":                 DevicePhone,
+		"iPadOS":              DeviceTablet,
+		"watchOS":             DeviceWatch,
+		"tvOS":                DeviceTV,
+		"macOS":               DeviceComputer,
+		"Windows":             DeviceComputer,
+		"Linux (Ubuntu)":      DeviceComputer,
+		"Linux/Unix":          DeviceComputer,
+		"FreeBSD":             DeviceComputer,
+		"ネットワーク機器 (MikroTik)": DeviceNetwork,
+		"unknown":             DeviceUnknown,
+		"":                    DeviceUnknown,
+	}
+	for os, want := range cases {
+		if got := deviceFromOS(os); got != want {
+			t.Errorf("deviceFromOS(%q)=%v, want %v", os, got, want)
+		}
+	}
+}
+
+func TestDetect_DeviceFromPortProfile(t *testing.T) {
+	// model が無くても、OS 推定経由で種別が付く。Windows ポート群 → PC。
+	g := Detect([]scanner.Result{open(135, ""), open(445, ""), open(3389, "")})
+	if g.OS != "Windows" {
+		t.Fatalf("OS=%q, want Windows", g.OS)
+	}
+	if g.Device != DeviceComputer {
+		t.Errorf("Device=%v, want PC(Computer)", g.Device)
+	}
+}
+
+func TestDetect_UnknownHasNoDevice(t *testing.T) {
+	// OS 不明なら種別も判別不能のままにする。
+	g := Detect([]scanner.Result{open(12345, "")})
+	if g.Device.Known() {
+		t.Errorf("unknown なのに種別が付いた: %v", g.Device)
+	}
+}
+
+func TestDeviceClass_JSONRoundTrip(t *testing.T) {
+	for _, d := range []DeviceClass{
+		DevicePhone, DeviceTablet, DeviceComputer, DeviceWatch, DeviceTV, DeviceNetwork, DeviceUnknown,
+	} {
+		data, err := json.Marshal(d)
+		if err != nil {
+			t.Fatalf("Marshal 失敗: %v", err)
+		}
+		var got DeviceClass
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatalf("Unmarshal 失敗: %v", err)
+		}
+		if got != d {
+			t.Errorf("round-trip 不一致: %v -> %v", d, got)
+		}
+	}
+}
+
+func TestDeviceClass_OmitsUnknownInGuessJSON(t *testing.T) {
+	// DeviceUnknown は omitempty で JSON から省略される（ノイズを出さない）。
+	data, err := json.Marshal(Guess{OS: "Linux/Unix", Confidence: ConfidenceLow})
+	if err != nil {
+		t.Fatalf("Marshal 失敗: %v", err)
+	}
+	if strings.Contains(string(data), "device") {
+		t.Errorf("Unknown 種別が JSON に出た: %s", data)
 	}
 }
 
