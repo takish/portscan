@@ -13,6 +13,7 @@
 - `-tui` でインタラクティブ画面（リアルタイム進捗バー＋検出ポートの逐次表示）
 - 開放ポートに既知リスクがあれば、深刻度・代表攻撃・対策を**常に併記**（防御目的）
 - `-banner` で開放ポートのバナーを取得し、サービス/バージョンを推定（HTTP/TLS 対応）
+- 開放ポートの顔ぶれとバナーから OS を軽量推定し、確度付きで**常に併記**（root 不要）
 
 ## 必要環境
 
@@ -102,6 +103,20 @@ JSON で結果だけをファイルに保存（進捗は画面に残る）:
 
 > バナーは将来の OS 判定（軽量ヒューリスティック）やリスク精度向上の材料にもなる。
 
+### OS 推定（軽量ヒューリスティック）
+
+開放ポートの顔ぶれと（取得済みなら）バナー文字列から、対象ホストの OS を
+軽量に推定して**常に併記**する。root 権限や生パケット送出は不要で、スキャン結果
+だけを材料にする。
+
+- **バナーの OS 名**が最も強い手がかり（例: `Apache/2.4 (Ubuntu)` → Linux (Ubuntu)、確度 high）
+- バナーが無ければ**開放ポートのプロファイル**で推定（例: 445/3389/139/135 → Windows、548 → macOS、22 のみ → Linux/Unix）
+- 確度は `high` / `medium` / `low` の3段階。`-banner` を併用すると手がかりが増えて精度が上がる
+- text はヘッダ行、JSON は `os` フィールド、CSV は `os` / `os_confidence` 列、TUI はヘッダに併記
+
+> 確実な OS フィンガープリンティング（TCP/IP スタック解析等）は行わない。
+> あくまで「開いているポートとバナー」からの推測であり、確度で限界を明示している。
+
 ### ホストディスカバリ
 
 `-discover` を付けると、サブネット内の各ホストへ代表ポート（80/443/22 等）に
@@ -175,15 +190,18 @@ localhost で 1001 ポートをスキャンした参考値:
     ├── risk/
     │   ├── risk.go              # 開放ポート→既知リスク・攻撃・対策の組み込みDB
     │   └── risk_test.go         # テスト
+    ├── osdetect/
+    │   ├── osdetect.go          # 開放ポート＋バナーからの軽量 OS 推定
+    │   └── osdetect_test.go     # テスト
     └── tui/
         ├── tui.go               # bubbletea によるインタラクティブ画面
         └── tui_test.go          # Model-Update-View のロジックテスト
 ```
 
-スキャン中核（`scanner` / `discover` / `report` / `risk`）は標準ライブラリのみ。外部依存は
-TUI 表示に使う [bubbletea](https://github.com/charmbracelet/bubbletea) 系のみで、
+スキャン中核（`scanner` / `discover` / `report` / `risk` / `osdetect`）は標準ライブラリのみ。
+外部依存は TUI 表示に使う [bubbletea](https://github.com/charmbracelet/bubbletea) 系のみで、
 `scanner.ScanStream` がスキャンイベントを逐次チャネルへ流し、`tui` がそれを購読して描画する。
-リスク情報は `risk.Lookup` を `report` / `tui` が描画時に引いて結合する。
+リスク情報は `risk.Lookup`、OS 推定は `osdetect.Detect` を `report` / `tui` が描画時に引いて結合する。
 
 ## テスト
 

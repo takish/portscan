@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/takish/portscan/internal/osdetect"
 	"github.com/takish/portscan/internal/risk"
 	"github.com/takish/portscan/internal/scanner"
 )
@@ -48,9 +49,17 @@ type resultWithRisk struct {
 	Risk *risk.Info `json:"risk,omitempty"`
 }
 
-// hostScanWithRisk はホスト別出力用にリスク情報を添えた DTO。
+// scanReport は単一ホストの JSON 出力用 DTO。OS 推定はホスト単位の情報なので、
+// ポート配列を直接出力するのではなく os と ports を持つオブジェクトに包む。
+type scanReport struct {
+	OS    osdetect.Guess   `json:"os"`
+	Ports []resultWithRisk `json:"ports"`
+}
+
+// hostScanWithRisk はホスト別出力用にリスク・OS 推定情報を添えた DTO。
 type hostScanWithRisk struct {
 	Host  string           `json:"host"`
+	OS    osdetect.Guess   `json:"os"`
 	Ports []resultWithRisk `json:"ports"`
 }
 
@@ -107,7 +116,11 @@ func renderHostText(w io.Writer, scans []HostScan) error {
 func renderHostJSON(w io.Writer, scans []HostScan) error {
 	out := make([]hostScanWithRisk, len(scans))
 	for i, hs := range scans {
-		out[i] = hostScanWithRisk{Host: hs.Host, Ports: enrich(hs.Results)}
+		out[i] = hostScanWithRisk{
+			Host:  hs.Host,
+			OS:    osdetect.Detect(hs.Results),
+			Ports: enrich(hs.Results),
+		}
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
@@ -120,8 +133,9 @@ func renderHostCSV(w io.Writer, scans []HostScan) error {
 		return err
 	}
 	for _, hs := range scans {
+		os := osdetect.Detect(hs.Results)
 		for _, r := range hs.Results {
-			if err := cw.Write(append([]string{hs.Host}, csvRow(r)...)); err != nil {
+			if err := cw.Write(append([]string{hs.Host}, csvRow(r, os)...)); err != nil {
 				return err
 			}
 		}
@@ -131,6 +145,9 @@ func renderHostCSV(w io.Writer, scans []HostScan) error {
 }
 
 func renderText(w io.Writer, results []scanner.Result) error {
+	if err := writeOSText(w, osdetect.Detect(results)); err != nil {
+		return err
+	}
 	for _, r := range results {
 		if _, err := fmt.Fprintf(w, " %d [%s]  -->   %s\n", r.Port, r.Status, r.Service); err != nil {
 			return err
@@ -144,6 +161,23 @@ func renderText(w io.Writer, results []scanner.Result) error {
 			if err := writeRiskText(w, info); err != nil {
 				return err
 			}
+		}
+	}
+	return nil
+}
+
+// writeOSText は推定 OS をポート一覧の前にヘッダ行として出力する。
+// 手がかりが無い（unknown）場合はノイズになるため出力しない。
+func writeOSText(w io.Writer, g osdetect.Guess) error {
+	if !g.Known() {
+		return nil
+	}
+	if _, err := fmt.Fprintf(w, "推定OS: %s  (確度: %s)\n", g.OS, g.Confidence); err != nil {
+		return err
+	}
+	if len(g.Reasons) > 0 {
+		if _, err := fmt.Fprintf(w, "  根拠: %s\n", strings.Join(g.Reasons, " / ")); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -169,10 +203,11 @@ func writeRiskText(w io.Writer, info risk.Info) error {
 
 func renderJSON(w io.Writer, results []scanner.Result) error {
 	// nil スライスは "null" になってしまうため空配列に正規化する。
-	out := enrich(results)
-	if out == nil {
-		out = []resultWithRisk{}
+	ports := enrich(results)
+	if ports == nil {
+		ports = []resultWithRisk{}
 	}
+	out := scanReport{OS: osdetect.Detect(results), Ports: ports}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
@@ -183,8 +218,9 @@ func renderCSV(w io.Writer, results []scanner.Result) error {
 	if err := cw.Write(csvHeader()); err != nil {
 		return err
 	}
+	os := osdetect.Detect(results)
 	for _, r := range results {
-		if err := cw.Write(csvRow(r)); err != nil {
+		if err := cw.Write(csvRow(r, os)); err != nil {
 			return err
 		}
 	}
@@ -193,23 +229,28 @@ func renderCSV(w io.Writer, results []scanner.Result) error {
 }
 
 func csvHeader() []string {
-	// banner は任意取得（-banner 時のみ）なので末尾に置き、既存の列順を保つ。
-	return []string{"port", "status", "service", "severity", "risk", "attacks", "mitigations", "banner"}
+	// banner / os はホスト単位・任意取得なので末尾に置き、既存の列順を保つ。
+	return []string{"port", "status", "service", "severity", "risk", "attacks", "mitigations", "banner", "os", "os_confidence"}
 }
 
 func csvHostHeader() []string {
 	return append([]string{"host"}, csvHeader()...)
 }
 
-// csvRow は1結果を CSV の1行（ポート〜対策）に変換する。
-// リスク未登録のポートはリスク関連列を空にする。
-func csvRow(r scanner.Result) []string {
-	row := []string{strconv.Itoa(r.Port), r.Status.String(), r.Service, "", "", "", "", r.Banner}
+// csvRow は1結果を CSV の1行（ポート〜OS推定）に変換する。
+// リスク未登録のポートはリスク関連列を空にする。OS 推定はホスト単位の
+// 情報なので、当該ホストの全行に同じ値を繰り返し出力する。
+func csvRow(r scanner.Result, os osdetect.Guess) []string {
+	row := []string{strconv.Itoa(r.Port), r.Status.String(), r.Service, "", "", "", "", r.Banner, "", ""}
 	if info, ok := risk.Lookup(r.Port); ok {
 		row[3] = info.Severity.String()
 		row[4] = info.Summary
 		row[5] = strings.Join(info.Attacks, " / ")
 		row[6] = strings.Join(info.Mitigations, " / ")
+	}
+	if os.Known() {
+		row[8] = os.OS
+		row[9] = os.Confidence.String()
 	}
 	return row
 }

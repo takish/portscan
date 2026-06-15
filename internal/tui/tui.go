@@ -17,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/takish/portscan/internal/osdetect"
 	"github.com/takish/portscan/internal/risk"
 	"github.com/takish/portscan/internal/scanner"
 )
@@ -147,6 +148,12 @@ func (m model) View() string {
 	shown := make([]scanner.Result, len(m.found))
 	copy(shown, m.found)
 	sort.Slice(shown, func(i, j int) bool { return shown[i].Port < shown[j].Port })
+
+	// 開放ポートの顔ぶれから OS を推定して併記する（手がかりがあれば）。
+	if g := osdetect.Detect(shown); g.Known() {
+		osLine := fmt.Sprintf("  推定OS: %s  %s", g.OS, hintStyle.Render("(確度: "+g.Confidence.String()+")"))
+		b.WriteString(osLine + "\n\n")
+	}
 	for _, r := range shown {
 		line := fmt.Sprintf("  %s  %s  %s",
 			portStyle.Render(fmt.Sprintf("%5d", r.Port)),
