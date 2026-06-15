@@ -82,6 +82,66 @@ func TestScan_ResultsSorted(t *testing.T) {
 	}
 }
 
+func TestScanStream_EmitsProgressAndFound(t *testing.T) {
+	port := listen(t)
+
+	// 開放ポートを含む小さな範囲をストリーミングでスキャンする。
+	low, high := port-2, port+2
+	if low < 1 {
+		low = 1
+	}
+	cfg := Config{
+		Host:      "127.0.0.1",
+		PortStart: low,
+		PortEnd:   high,
+		Threads:   4,
+		Timeout:   time.Second,
+	}
+
+	ch, err := ScanStream(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("ScanStream が失敗: %v", err)
+	}
+
+	total := high - low + 1
+	var events, foundCount, maxScanned int
+	gotOpen := false
+	for ev := range ch {
+		events++
+		if ev.Total != total {
+			t.Fatalf("Total=%d, want %d", ev.Total, total)
+		}
+		if ev.Scanned > maxScanned {
+			maxScanned = ev.Scanned
+		}
+		if ev.Found != nil {
+			foundCount++
+			if ev.Found.Port == port && ev.Found.Status == StatusOpen {
+				gotOpen = true
+			}
+		}
+	}
+
+	// 全ポートぶんのイベントが届き、最終的に Scanned が Total に達すること。
+	if events != total {
+		t.Fatalf("イベント数=%d, want %d", events, total)
+	}
+	if maxScanned != total {
+		t.Fatalf("最大 Scanned=%d, want %d", maxScanned, total)
+	}
+	if !gotOpen {
+		t.Fatalf("開放ポート %d が Found として流れてこなかった", port)
+	}
+}
+
+func TestScanStream_InvalidConfig(t *testing.T) {
+	// 不正な設定はチャネルを返さず即エラーになること。
+	_, err := ScanStream(context.Background(), Config{Host: ""})
+	if err == nil {
+		t.Fatal("不正な Config でエラーが返るべき")
+	}
+}
+
 func TestScan_Cancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 即キャンセル
