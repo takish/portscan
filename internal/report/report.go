@@ -135,6 +135,11 @@ func renderText(w io.Writer, results []scanner.Result) error {
 		if _, err := fmt.Fprintf(w, " %d [%s]  -->   %s\n", r.Port, r.Status, r.Service); err != nil {
 			return err
 		}
+		if r.Banner != "" {
+			if _, err := fmt.Fprintf(w, "      ↳ banner: %s\n", r.Banner); err != nil {
+				return err
+			}
+		}
 		if info, ok := risk.Lookup(r.Port); ok {
 			if err := writeRiskText(w, info); err != nil {
 				return err
@@ -188,7 +193,8 @@ func renderCSV(w io.Writer, results []scanner.Result) error {
 }
 
 func csvHeader() []string {
-	return []string{"port", "status", "service", "severity", "risk", "attacks", "mitigations"}
+	// banner は任意取得（-banner 時のみ）なので末尾に置き、既存の列順を保つ。
+	return []string{"port", "status", "service", "severity", "risk", "attacks", "mitigations", "banner"}
 }
 
 func csvHostHeader() []string {
@@ -198,7 +204,7 @@ func csvHostHeader() []string {
 // csvRow は1結果を CSV の1行（ポート〜対策）に変換する。
 // リスク未登録のポートはリスク関連列を空にする。
 func csvRow(r scanner.Result) []string {
-	row := []string{strconv.Itoa(r.Port), r.Status.String(), r.Service, "", "", "", ""}
+	row := []string{strconv.Itoa(r.Port), r.Status.String(), r.Service, "", "", "", "", r.Banner}
 	if info, ok := risk.Lookup(r.Port); ok {
 		row[3] = info.Severity.String()
 		row[4] = info.Summary

@@ -70,6 +70,7 @@ type Config struct {
 	Threads         int           // 並列ワーカー数（上限）
 	Timeout         time.Duration // ポート1つあたりの接続タイムアウト
 	IncludeFiltered bool          // true の場合、filtered（タイムアウト）ポートも結果に含める
+	GrabBanner      bool          // true の場合、開放ポートのバナーを取得する（追加の接続が発生）
 }
 
 // Validate は設定値が妥当かを検証する。
@@ -97,9 +98,10 @@ func (c Config) Validate() error {
 
 // Result は1つのポートのスキャン結果を表す。
 type Result struct {
-	Port    int    `json:"port"`    // ポート番号
-	Status  Status `json:"status"`  // ポートの状態
-	Service string `json:"service"` // 推定サービス名（不明な場合は "unknown"）
+	Port    int    `json:"port"`             // ポート番号
+	Status  Status `json:"status"`           // ポートの状態
+	Service string `json:"service"`          // 推定サービス名（不明な場合は "unknown"）
+	Banner  string `json:"banner,omitempty"` // 取得できたバナー（-banner 時のみ。空なら省略）
 }
 
 // Progress はストリーミングスキャン中に発生する1イベントを表す。
@@ -145,7 +147,12 @@ func ScanStream(ctx context.Context, cfg Config) (<-chan Progress, error) {
 				n := atomic.AddInt64(&scanned, 1)
 				ev := Progress{Scanned: int(n), Total: nPorts}
 				if status == StatusOpen || (status == StatusFiltered && cfg.IncludeFiltered) {
-					ev.Found = &Result{Port: port, Status: status, Service: DescribePort(port)}
+					res := Result{Port: port, Status: status, Service: DescribePort(port)}
+					// バナーは開放ポートのみ取得する（filtered は接続が成立していない）。
+					if cfg.GrabBanner && status == StatusOpen {
+						res.Banner = grabBanner(ctx, cfg.Host, port, cfg.Timeout)
+					}
+					ev.Found = &res
 				}
 				select {
 				case out <- ev:

@@ -153,6 +153,10 @@ func (m model) View() string {
 			openStyle.Render("["+r.Status.String()+"]"),
 			svcStyle.Render(r.Service),
 		)
+		// バナーを取得していれば淡色で併記する。
+		if r.Banner != "" {
+			line += "  " + hintStyle.Render("("+r.Banner+")")
+		}
 		// 既知リスクがあれば深刻度バッジ＋要約を併記する（常に表示）。
 		if info, ok := risk.Lookup(r.Port); ok {
 			badge := severityStyle(info.Severity).Render("⚠ " + info.Severity.String())
