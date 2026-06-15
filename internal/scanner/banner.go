@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/takish/portscan/internal/sanitize"
 )
 
 // maxBannerLen は取得・保持するバナー文字列の最大長（文字数）。
@@ -144,22 +146,12 @@ func tlsVersionString(v uint16) string {
 	}
 }
 
-// clip はバナーを1行に丸め、制御文字を除去し、長さを制限する。
+// clip はバナーを1行に丸めてから共通の無害化（制御文字除去・UTF-8 安全化・
+// 長さ制限）を施す。複数行バナーの後続行は表示上ノイズなので捨てる。
 func clip(s string) string {
 	// 最初の行のみを採用（複数行バナーの後続は捨てる）。
 	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
 		s = s[:i]
 	}
-	// 制御文字（および DEL）を除去する。
-	s = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, s)
-	s = strings.TrimSpace(s)
-	if len(s) > maxBannerLen {
-		s = s[:maxBannerLen]
-	}
-	return s
+	return sanitize.Label(s)
 }

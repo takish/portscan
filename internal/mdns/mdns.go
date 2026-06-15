@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/miekg/dns"
+
+	"github.com/takish/portscan/internal/sanitize"
 )
 
 // mDNS のマルチキャストアドレスとポート（IPv4）。
@@ -124,18 +126,19 @@ func sendQueries(conn *net.UDPConn) error {
 func merge(entries map[string]Entry, ip string, msg *dns.Msg) {
 	e := entries[ip]
 	for _, rr := range allRecords(msg) {
+		// 応答は第三者が偽装できるため、端末出力前にここで無害化する。
 		switch v := rr.(type) {
 		case *dns.A:
 			if e.Host == "" {
-				e.Host = trimDot(v.Hdr.Name)
+				e.Host = sanitize.Label(trimDot(v.Hdr.Name))
 			}
 		case *dns.AAAA:
 			if e.Host == "" {
-				e.Host = trimDot(v.Hdr.Name)
+				e.Host = sanitize.Label(trimDot(v.Hdr.Name))
 			}
 		case *dns.TXT:
 			if m := modelFromTXT(v); m != "" {
-				e.Model = m
+				e.Model = sanitize.Label(m)
 			}
 		}
 	}

@@ -25,6 +25,7 @@ internal/
   osdetect/ 開放ポート＋バナー＋mDNSモデルからの軽量 OS 推定（確度付き）
   config/   スキャン設定の JSON 保存・読込（フラグ優先でマージ）
   mdns/     mDNS(Bonjour) でホスト名・デバイスモデルを収集（miekg/dns）
+  sanitize/ 外部由来文字列（mDNS応答・バナー）の無害化。制御文字除去・UTF-8安全化・長さ制限を1箇所に集約
   tui/      bubbletea による TUI モード
 ```
 
