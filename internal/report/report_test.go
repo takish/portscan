@@ -109,6 +109,56 @@ func TestRenderHostScans_CSV(t *testing.T) {
 	}
 }
 
+// 開放ポートに既知リスクがある場合、各フォーマットへ常に併記されることを確認する。
+
+var riskyPort = []scanner.Result{
+	{Port: 6379, Status: scanner.StatusOpen, Service: "Redis"}, // critical
+}
+
+func TestRenderText_IncludesRisk(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, riskyPort, FormatText); err != nil {
+		t.Fatalf("Render が失敗: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "critical") || !strings.Contains(out, "攻撃:") || !strings.Contains(out, "対策:") {
+		t.Errorf("text 出力にリスク情報が含まれない:\n%s", out)
+	}
+}
+
+func TestRenderJSON_IncludesRisk(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, riskyPort, FormatJSON); err != nil {
+		t.Fatalf("Render が失敗: %v", err)
+	}
+	var got []struct {
+		Port int `json:"port"`
+		Risk *struct {
+			Severity string `json:"severity"`
+		} `json:"risk"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("JSON 解析失敗: %v\n%s", err, buf.String())
+	}
+	if len(got) != 1 || got[0].Risk == nil || got[0].Risk.Severity != "critical" {
+		t.Errorf("JSON に risk.severity=critical が無い: %+v", got)
+	}
+}
+
+func TestRenderCSV_IncludesRisk(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, riskyPort, FormatCSV); err != nil {
+		t.Fatalf("Render が失敗: %v", err)
+	}
+	out := buf.String()
+	if !strings.HasPrefix(out, "port,status,service,severity,risk,attacks,mitigations") {
+		t.Errorf("CSV ヘッダにリスク列が無い:\n%s", out)
+	}
+	if !strings.Contains(out, "6379,open,Redis,critical") {
+		t.Errorf("CSV 行にリスク情報が無い:\n%s", out)
+	}
+}
+
 func TestRenderCSV(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sample, FormatCSV); err != nil {

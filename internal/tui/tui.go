@@ -17,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/takish/portscan/internal/risk"
 	"github.com/takish/portscan/internal/scanner"
 )
 
@@ -39,6 +40,20 @@ var (
 	hintStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	counterStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("250"))
 )
+
+// severityStyle は深刻度に応じた色付けを返す（critical=赤 … low=灰）。
+func severityStyle(s risk.Severity) lipgloss.Style {
+	switch s {
+	case risk.Critical:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	case risk.High:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("208")).Bold(true)
+	case risk.Medium:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("220"))
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	}
+}
 
 type model struct {
 	cfg      scanner.Config
@@ -133,11 +148,17 @@ func (m model) View() string {
 	copy(shown, m.found)
 	sort.Slice(shown, func(i, j int) bool { return shown[i].Port < shown[j].Port })
 	for _, r := range shown {
-		b.WriteString(fmt.Sprintf("  %s  %s  %s\n",
+		line := fmt.Sprintf("  %s  %s  %s",
 			portStyle.Render(fmt.Sprintf("%5d", r.Port)),
 			openStyle.Render("["+r.Status.String()+"]"),
 			svcStyle.Render(r.Service),
-		))
+		)
+		// 既知リスクがあれば深刻度バッジ＋要約を併記する（常に表示）。
+		if info, ok := risk.Lookup(r.Port); ok {
+			badge := severityStyle(info.Severity).Render("⚠ " + info.Severity.String())
+			line += "  " + badge + "  " + svcStyle.Render(info.Summary)
+		}
+		b.WriteString(line + "\n")
 	}
 
 	b.WriteString("\n")
