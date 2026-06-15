@@ -69,16 +69,22 @@ func runSingle(ctx context.Context, opts options) {
 	// 進捗・サマリは stderr へ。結果本体は stdout へ出し、パイプ連携を妨げない。
 	fmt.Fprintf(os.Stderr, "scanning %s port %d-%d...\n", cfg.Host, cfg.PortStart, cfg.PortEnd)
 
+	// -mdns 指定時はスキャンと並行で mDNS 収集を走らせ、待ち時間を隠す。
+	var mdnsCh <-chan map[string]mdns.Entry
+	if opts.mdns {
+		mdnsCh = startMDNS(ctx)
+	}
+
 	results, err := scanner.Scan(ctx, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "スキャン失敗:", err)
 		os.Exit(1)
 	}
 
-	// -mdns 指定時のみ mDNS でホスト名・モデルを補う（単一ホストでは任意機能）。
+	// mDNS の結果が出揃ってからホスト名・モデルを結合する（任意機能）。
 	var meta report.Meta
-	if opts.mdns {
-		meta = metaForHost(browseMDNS(ctx), cfg.Host)
+	if mdnsCh != nil {
+		meta = metaForHost(<-mdnsCh, cfg.Host)
 	}
 
 	if err := report.RenderWithMeta(os.Stdout, results, opts.format, meta); err != nil {
@@ -88,16 +94,22 @@ func runSingle(ctx context.Context, opts options) {
 	fmt.Fprintf(os.Stderr, "%d 個のポートを検出しました\n", len(results))
 }
 
-// browseMDNS は mDNS 応答を収集して IP→Entry の対応を返す。失敗しても
-// 補助機能なのでエラーにせず、空マップを返してスキャン本体を妨げない。
-func browseMDNS(ctx context.Context) map[string]mdns.Entry {
-	fmt.Fprintln(os.Stderr, "mDNS でホスト名・デバイス情報を収集中...")
-	entries, err := mdns.Browse(ctx, mdnsTimeout)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "  mDNS 収集に失敗（無視して続行）:", err)
-		return nil
-	}
-	return entries
+// startMDNS は mDNS 収集をバックグラウンドで開始し、結果を受け取るチャネルを返す。
+// mDNS は応答待ちで mdnsTimeout 分ブロックするため、ポートスキャンと並行させて
+// 待ち時間を隠す。失敗しても補助機能なのでエラーにせず nil を流して続行する。
+func startMDNS(ctx context.Context) <-chan map[string]mdns.Entry {
+	ch := make(chan map[string]mdns.Entry, 1)
+	fmt.Fprintf(os.Stderr, "mDNS でホスト名・デバイス情報を収集中（最大 %s、スキャンと並行）...\n", mdnsTimeout)
+	go func() {
+		entries, err := mdns.Browse(ctx, mdnsTimeout)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "  mDNS 収集に失敗（無視して続行）:", err)
+			ch <- nil
+			return
+		}
+		ch <- entries
+	}()
+	return ch
 }
 
 // metaForHost は host（IP もしくは名前）に対応する mDNS 情報を引く。
@@ -138,11 +150,14 @@ func runDiscover(ctx context.Context, opts options) {
 	}
 	fmt.Fprintf(os.Stderr, "%d 台の生存ホストを検出。各ホストをスキャンします...\n", len(live))
 
-	// ディスカバリでは mDNS を自動併用し、検出ホストにホスト名・モデルを添える。
-	entries := browseMDNS(ctx)
+	// ディスカバリでは mDNS を自動併用する。各ホストのスキャンと並行で収集し、
+	// 結果は全ホストのスキャン完了後にまとめてホスト名・モデルへ結合する。
+	mdnsCh := startMDNS(ctx)
 
 	var scans []report.HostScan
-	for _, host := range live {
+	for i, host := range live {
+		// 直列スキャンで無反応に見えないよう、何台目を処理中か逐次表示する。
+		fmt.Fprintf(os.Stderr, "[%d/%d] %s をスキャン中...\n", i+1, len(live), host)
 		cfg := opts.cfg
 		cfg.Host = host
 		results, err := scanner.Scan(ctx, cfg)
@@ -155,7 +170,14 @@ func runDiscover(ctx context.Context, opts options) {
 			fmt.Fprintf(os.Stderr, "  %s のスキャンに失敗: %v（スキップ）\n", host, err)
 			continue
 		}
-		scans = append(scans, report.HostScan{Host: host, Results: results, Meta: metaForHost(entries, host)})
+		fmt.Fprintf(os.Stderr, "  %d 個の開放ポートを検出\n", len(results))
+		scans = append(scans, report.HostScan{Host: host, Results: results})
+	}
+
+	// 並行実行していた mDNS 結果を待ち受け、各ホストへホスト名・モデルを添える。
+	entries := <-mdnsCh
+	for i := range scans {
+		scans[i].Meta = metaForHost(entries, scans[i].Host)
 	}
 
 	if err := report.RenderHostScans(os.Stdout, scans, opts.format); err != nil {
