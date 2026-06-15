@@ -81,6 +81,25 @@ func Browse(ctx context.Context, timeout time.Duration) (map[string]Entry, error
 	return entries, nil
 }
 
+// Lookup は host（IP もしくは名前）に対応する Entry を引く。
+// Entry は応答元 IP をキーに保持しているので、host が名前なら解決して
+// 各 IP で照合する。見つからなければ ok=false を返す。
+func Lookup(entries map[string]Entry, host string) (Entry, bool) {
+	if len(entries) == 0 {
+		return Entry{}, false
+	}
+	if e, ok := entries[host]; ok {
+		return e, true
+	}
+	ips, _ := net.LookupHost(host)
+	for _, ip := range ips {
+		if e, ok := entries[ip]; ok {
+			return e, true
+		}
+	}
+	return Entry{}, false
+}
+
 // sendQueries は queryNames の PTR 問い合わせをまとめて1パケットで送る。
 func sendQueries(conn *net.UDPConn) error {
 	m := new(dns.Msg)

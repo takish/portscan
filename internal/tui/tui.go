@@ -12,20 +12,30 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/takish/portscan/internal/mdns"
 	"github.com/takish/portscan/internal/osdetect"
 	"github.com/takish/portscan/internal/risk"
 	"github.com/takish/portscan/internal/scanner"
 )
 
+// mdnsTimeout は TUI での mDNS 応答待ち受け時間。スキャンと並行で走らせる。
+const mdnsTimeout = 2 * time.Second
+
 // メッセージ型。bubbletea は Update に届く msg の型で分岐する。
 type (
 	progressMsg scanner.Progress // スキャン1ポートぶんの進捗イベント
 	doneMsg     struct{}         // スキャンチャネルがクローズした（完了 or 中断）
+	// mdnsResultMsg は mDNS 収集の完了通知。失敗・該当なしでも空で届く。
+	mdnsResultMsg struct {
+		hostname string
+		model    string
+	}
 )
 
 var (
@@ -58,14 +68,19 @@ func severityStyle(s risk.Severity) lipgloss.Style {
 
 type model struct {
 	cfg      scanner.Config
+	ctx      context.Context // mDNS 収集に渡す（q 押下時に cancel で止まる）
 	ch       <-chan scanner.Progress
 	cancel   context.CancelFunc // q 押下時にスキャンを中断する
 	progress progress.Model
+	useMDNS  bool // -mdns 指定時のみ mDNS を併用する
 
-	scanned int
-	total   int
-	found   []scanner.Result
-	done    bool
+	scanned  int
+	total    int
+	found    []scanner.Result
+	hostname string // mDNS で得たホスト名（取得後のみ）
+	osModel  string // mDNS で得たデバイスモデル（OS 推定ヒント）
+	mdnsDone bool   // mDNS 収集が完了したか
+	done     bool
 }
 
 // waitForEvent はチャネルから1イベント受信する tea.Cmd を返す。
@@ -81,8 +96,29 @@ func waitForEvent(ch <-chan scanner.Progress) tea.Cmd {
 	}
 }
 
+// browseMDNSCmd は mDNS 収集をバックグラウンドで行う tea.Cmd を返す。
+// tea.Cmd は goroutine で実行されるため、最大 mdnsTimeout のブロックでも
+// UI のイベントループは止まらない。結果は mdnsResultMsg で Update へ届く。
+func browseMDNSCmd(ctx context.Context, host string) tea.Cmd {
+	return func() tea.Msg {
+		entries, err := mdns.Browse(ctx, mdnsTimeout)
+		if err != nil {
+			return mdnsResultMsg{}
+		}
+		if e, ok := mdns.Lookup(entries, host); ok {
+			return mdnsResultMsg{hostname: e.Host, model: e.Model}
+		}
+		return mdnsResultMsg{}
+	}
+}
+
 func (m model) Init() tea.Cmd {
-	return waitForEvent(m.ch)
+	cmds := []tea.Cmd{waitForEvent(m.ch)}
+	if m.useMDNS {
+		// スキャンと並行で mDNS を走らせ、結果が来たら表示へ反映する。
+		cmds = append(cmds, browseMDNSCmd(m.ctx, m.cfg.Host))
+	}
+	return tea.Batch(cmds...)
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -119,6 +155,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Batch(cmds...)
 
+	case mdnsResultMsg:
+		m.hostname = msg.hostname
+		m.osModel = msg.model
+		m.mdnsDone = true
+		return m, nil
+
 	case doneMsg:
 		m.done = true
 		cmd := m.progress.SetPercent(1.0)
@@ -149,10 +191,23 @@ func (m model) View() string {
 	copy(shown, m.found)
 	sort.Slice(shown, func(i, j int) bool { return shown[i].Port < shown[j].Port })
 
-	// 開放ポートの顔ぶれから OS を推定して併記する（手がかりがあれば）。
-	if g := osdetect.Detect(shown); g.Known() {
+	// ホスト名／OS 推定のヘッダブロック。mDNS 併用時は収集状況も示す。
+	header := false
+	if m.useMDNS && !m.mdnsDone {
+		b.WriteString("  " + hintStyle.Render("mDNS 収集中…") + "\n")
+		header = true
+	} else if m.hostname != "" {
+		b.WriteString("  " + hintStyle.Render("ホスト名: "+m.hostname) + "\n")
+		header = true
+	}
+	// 開放ポートの顔ぶれ（＋mDNS モデル）から OS を推定して併記する。
+	if g := osdetect.DetectWithHints(shown, osdetect.Hints{Model: m.osModel}); g.Known() {
 		osLine := fmt.Sprintf("  推定OS: %s  %s", g.OS, hintStyle.Render("(確度: "+g.Confidence.String()+")"))
-		b.WriteString(osLine + "\n\n")
+		b.WriteString(osLine + "\n")
+		header = true
+	}
+	if header {
+		b.WriteString("\n")
 	}
 	for _, r := range shown {
 		line := fmt.Sprintf("  %s  %s  %s",
@@ -184,7 +239,8 @@ func (m model) View() string {
 // Run は TUI モードでスキャンを実行し、ユーザーが終了するまでブロックする。
 // 結果はピプ連携の対象ではなく画面表示専用なので、altscreen を使わず
 // 終了後も最終フレームが端末に残るようにしている。
-func Run(ctx context.Context, cfg scanner.Config) error {
+// useMDNS が真ならスキャンと並行で mDNS を収集し、ホスト名・モデルを併記する。
+func Run(ctx context.Context, cfg scanner.Config, useMDNS bool) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -199,10 +255,12 @@ func Run(ctx context.Context, cfg scanner.Config) error {
 
 	m := model{
 		cfg:      cfg,
+		ctx:      ctx,
 		ch:       ch,
 		cancel:   cancel,
 		progress: progress.New(progress.WithDefaultGradient()),
 		total:    cfg.PortEnd - cfg.PortStart + 1,
+		useMDNS:  useMDNS,
 	}
 
 	_, err = tea.NewProgram(m).Run()

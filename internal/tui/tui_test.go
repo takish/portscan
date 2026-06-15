@@ -51,6 +51,31 @@ func TestModel_FoundSortedInView(t *testing.T) {
 	}
 }
 
+func TestModel_MDNSResultUpdatesView(t *testing.T) {
+	m := newTestModel(10)
+	m.useMDNS = true
+
+	// 収集完了前は「mDNS 収集中…」が出る。
+	if !strings.Contains(m.View(), "mDNS 収集中") {
+		t.Errorf("収集中表示が出ていない:\n%s", m.View())
+	}
+
+	// mDNS 結果（モデル付き）を流すとホスト名表示＋OS 推定に反映される。
+	next, _ := m.Update(mdnsResultMsg{hostname: "Mac.local", model: "Macmini9,1"})
+	m = next.(model)
+	view := m.View()
+	if !strings.Contains(view, "ホスト名: Mac.local") {
+		t.Errorf("ホスト名が表示されていない:\n%s", view)
+	}
+	// モデルヒントで OS は macOS(high) になる。
+	if !strings.Contains(view, "推定OS: macOS") {
+		t.Errorf("mDNS モデルが OS 推定に効いていない:\n%s", view)
+	}
+	if strings.Contains(view, "mDNS 収集中") {
+		t.Errorf("完了後も収集中表示が残っている:\n%s", view)
+	}
+}
+
 func TestModel_DoneSetsFlag(t *testing.T) {
 	m := newTestModel(10)
 	next, _ := m.Update(doneMsg{})
