@@ -5,16 +5,22 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"time"
 
 	"github.com/takish/portscan/internal/config"
 	"github.com/takish/portscan/internal/discover"
+	"github.com/takish/portscan/internal/mdns"
 	"github.com/takish/portscan/internal/report"
 	"github.com/takish/portscan/internal/scanner"
 	"github.com/takish/portscan/internal/tui"
 )
+
+// mdnsTimeout は mDNS 応答の待ち受け時間。ポートスキャンの -timeout とは
+// 別物（あちらは短く設定されがちで応答取りこぼしになる）なので固定値にする。
+const mdnsTimeout = 2 * time.Second
 
 // options は解析済みのコマンドライン設定をまとめる。
 type options struct {
@@ -23,6 +29,7 @@ type options struct {
 	discover bool
 	cidr     string
 	tui      bool
+	mdns     bool
 }
 
 func main() {
@@ -68,11 +75,47 @@ func runSingle(ctx context.Context, opts options) {
 		os.Exit(1)
 	}
 
-	if err := report.Render(os.Stdout, results, opts.format); err != nil {
+	// -mdns 指定時のみ mDNS でホスト名・モデルを補う（単一ホストでは任意機能）。
+	var meta report.Meta
+	if opts.mdns {
+		meta = metaForHost(browseMDNS(ctx), cfg.Host)
+	}
+
+	if err := report.RenderWithMeta(os.Stdout, results, opts.format, meta); err != nil {
 		fmt.Fprintln(os.Stderr, "出力失敗:", err)
 		os.Exit(1)
 	}
 	fmt.Fprintf(os.Stderr, "%d 個のポートを検出しました\n", len(results))
+}
+
+// browseMDNS は mDNS 応答を収集して IP→Entry の対応を返す。失敗しても
+// 補助機能なのでエラーにせず、空マップを返してスキャン本体を妨げない。
+func browseMDNS(ctx context.Context) map[string]mdns.Entry {
+	fmt.Fprintln(os.Stderr, "mDNS でホスト名・デバイス情報を収集中...")
+	entries, err := mdns.Browse(ctx, mdnsTimeout)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "  mDNS 収集に失敗（無視して続行）:", err)
+		return nil
+	}
+	return entries
+}
+
+// metaForHost は host（IP もしくは名前）に対応する mDNS 情報を引く。
+// mDNS の Entry は応答元 IP をキーにしているので、名前なら解決して照合する。
+func metaForHost(entries map[string]mdns.Entry, host string) report.Meta {
+	if len(entries) == 0 {
+		return report.Meta{}
+	}
+	if e, ok := entries[host]; ok {
+		return report.Meta{Hostname: e.Host, Model: e.Model}
+	}
+	ips, _ := net.LookupHost(host)
+	for _, ip := range ips {
+		if e, ok := entries[ip]; ok {
+			return report.Meta{Hostname: e.Host, Model: e.Model}
+		}
+	}
+	return report.Meta{}
 }
 
 // runDiscover は同一セグメントの生存ホストを探索し、各ホストをポートスキャンする。
@@ -95,6 +138,9 @@ func runDiscover(ctx context.Context, opts options) {
 	}
 	fmt.Fprintf(os.Stderr, "%d 台の生存ホストを検出。各ホストをスキャンします...\n", len(live))
 
+	// ディスカバリでは mDNS を自動併用し、検出ホストにホスト名・モデルを添える。
+	entries := browseMDNS(ctx)
+
 	var scans []report.HostScan
 	for _, host := range live {
 		cfg := opts.cfg
@@ -109,7 +155,7 @@ func runDiscover(ctx context.Context, opts options) {
 			fmt.Fprintf(os.Stderr, "  %s のスキャンに失敗: %v（スキップ）\n", host, err)
 			continue
 		}
-		scans = append(scans, report.HostScan{Host: host, Results: results})
+		scans = append(scans, report.HostScan{Host: host, Results: results, Meta: metaForHost(entries, host)})
 	}
 
 	if err := report.RenderHostScans(os.Stdout, scans, opts.format); err != nil {
@@ -120,7 +166,7 @@ func runDiscover(ctx context.Context, opts options) {
 
 // snapshot は実効設定値を config.Config に詰める（-save-config 用）。
 // timeout は人間が読みやすいよう duration 文字列（"2s" 等）で保存する。
-func snapshot(host string, start, end, threads int, timeout time.Duration, format string, showFiltered, banner, discover bool, cidr string, tui bool) config.Config {
+func snapshot(host string, start, end, threads int, timeout time.Duration, format string, showFiltered, banner, discover bool, cidr string, tui, mdns bool) config.Config {
 	timeoutStr := timeout.String()
 	return config.Config{
 		Host:         &host,
@@ -134,6 +180,7 @@ func snapshot(host string, start, end, threads int, timeout time.Duration, forma
 		Discover:     &discover,
 		CIDR:         &cidr,
 		TUI:          &tui,
+		Mdns:         &mdns,
 	}
 }
 
@@ -152,6 +199,7 @@ func parseFlags(args []string) (options, error) {
 	discoverMode := fs.Bool("discover", false, "同一セグメントの生存ホストを探索してスキャンする")
 	cidr := fs.String("cidr", "", "探索するサブネット (例: 192.168.1.0/24)。未指定なら自動検出")
 	tuiMode := fs.Bool("tui", false, "インタラクティブな TUI 画面でスキャンする（単一ホスト専用）")
+	mdnsMode := fs.Bool("mdns", false, "mDNS(Bonjour) でホスト名・デバイスモデルを収集して併記する（同一セグメント限定。-discover では自動有効）")
 	configPath := fs.String("config", "", "設定ファイル(JSON)のパス。未指定なら ./portscan.json 等を自動探索")
 	saveConfigPath := fs.String("save-config", "", "現在の実効設定を指定パスへ JSON で書き出す")
 
@@ -176,7 +224,7 @@ func parseFlags(args []string) (options, error) {
 
 	// 実効設定の書き出しが要求されていれば保存する（スキャンは継続する）。
 	if *saveConfigPath != "" {
-		if err := config.Save(*saveConfigPath, snapshot(*host, *start, *end, *threads, *timeout, *formatStr, *showFiltered, *banner, *discoverMode, *cidr, *tuiMode)); err != nil {
+		if err := config.Save(*saveConfigPath, snapshot(*host, *start, *end, *threads, *timeout, *formatStr, *showFiltered, *banner, *discoverMode, *cidr, *tuiMode, *mdnsMode)); err != nil {
 			return options{}, err
 		}
 		fmt.Fprintf(os.Stderr, "設定を書き出しました: %s\n", *saveConfigPath)
@@ -206,5 +254,6 @@ func parseFlags(args []string) (options, error) {
 		discover: *discoverMode,
 		cidr:     *cidr,
 		tui:      *tuiMode,
+		mdns:     *mdnsMode,
 	}, nil
 }

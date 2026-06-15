@@ -127,9 +127,51 @@ var portSignals = map[int]portSignal{
 	111:  {"Linux/Unix", 1, "111/rpcbind 開放"},
 }
 
+// Hints は開放ポート以外の補助的な判定材料。mDNS 等から得た情報を渡す。
+type Hints struct {
+	Model string // mDNS _device-info の model（例: "Macmini9,1"）
+}
+
+// modelHint はデバイスモデル文字列から OS を推定する。
+// model はメーカー定義の機種コードで、Apple 製品なら接頭辞でほぼ確定できる。
+func modelHint(model string) (Guess, bool) {
+	m := strings.ToLower(strings.TrimSpace(model))
+	if m == "" {
+		return Guess{}, false
+	}
+	reason := []string{fmt.Sprintf("mDNS model=%q", model)}
+	switch {
+	case strings.HasPrefix(m, "iphone"):
+		return Guess{OS: "iOS", Confidence: ConfidenceHigh, Reasons: reason}, true
+	case strings.HasPrefix(m, "ipad"):
+		return Guess{OS: "iPadOS", Confidence: ConfidenceHigh, Reasons: reason}, true
+	case strings.HasPrefix(m, "watch"):
+		return Guess{OS: "watchOS", Confidence: ConfidenceHigh, Reasons: reason}, true
+	case strings.HasPrefix(m, "appletv"):
+		return Guess{OS: "tvOS", Confidence: ConfidenceHigh, Reasons: reason}, true
+	case strings.HasPrefix(m, "mac") || strings.HasPrefix(m, "imac") || strings.HasPrefix(m, "macbook"):
+		return Guess{OS: "macOS", Confidence: ConfidenceHigh, Reasons: reason}, true
+	}
+	return Guess{}, false
+}
+
 // Detect は開放ポート（と取得済みバナー）から OS を推定する。
-// まずバナーの明示的な OS 名を探し、無ければ開放ポートの顔ぶれをスコアリングする。
+// mDNS 等の補助情報を加味したい場合は DetectWithHints を使う。
 func Detect(results []scanner.Result) Guess {
+	return DetectWithHints(results, Hints{})
+}
+
+// DetectWithHints は補助情報 h も加味して OS を推定する。
+// mDNS のモデル情報は最も確実な手がかりなので、あれば最優先で採用する。
+func DetectWithHints(results []scanner.Result, h Hints) Guess {
+	if g, ok := modelHint(h.Model); ok {
+		return g
+	}
+	return detectFromScan(results)
+}
+
+// detectFromScan は開放ポートとバナーのみから OS を推定する内部実装。
+func detectFromScan(results []scanner.Result) Guess {
 	open := make(map[int]bool)
 	var banners []string
 	for _, r := range results {
