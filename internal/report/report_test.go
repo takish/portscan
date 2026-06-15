@@ -65,6 +65,50 @@ func TestRenderJSON_Empty(t *testing.T) {
 	}
 }
 
+var sampleHosts = []HostScan{
+	{Host: "192.168.1.1", Results: []scanner.Result{{Port: 80, Status: scanner.StatusOpen, Service: "HTTP"}}},
+	{Host: "192.168.1.2", Results: []scanner.Result{{Port: 22, Status: scanner.StatusOpen, Service: "SSH"}}},
+}
+
+func TestRenderHostScans_Text(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderHostScans(&buf, sampleHosts, FormatText); err != nil {
+		t.Fatalf("RenderHostScans が失敗: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "=== 192.168.1.1 ===") || !strings.Contains(out, "HTTP") {
+		t.Errorf("ホスト別 text 出力が不正:\n%s", out)
+	}
+}
+
+func TestRenderHostScans_JSON(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderHostScans(&buf, sampleHosts, FormatJSON); err != nil {
+		t.Fatalf("RenderHostScans が失敗: %v", err)
+	}
+	var got []HostScan
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("JSON として解析できない: %v\n%s", err, buf.String())
+	}
+	if len(got) != 2 || got[0].Host != "192.168.1.1" || got[0].Results[0].Port != 80 {
+		t.Errorf("JSON 解析結果が不正: %+v", got)
+	}
+}
+
+func TestRenderHostScans_CSV(t *testing.T) {
+	var buf bytes.Buffer
+	if err := RenderHostScans(&buf, sampleHosts, FormatCSV); err != nil {
+		t.Fatalf("RenderHostScans が失敗: %v", err)
+	}
+	out := buf.String()
+	if !strings.HasPrefix(out, "host,port,status,service") {
+		t.Errorf("CSV ヘッダが不正:\n%s", out)
+	}
+	if !strings.Contains(out, "192.168.1.1,80,open,HTTP") {
+		t.Errorf("CSV 行が不正:\n%s", out)
+	}
+}
+
 func TestRenderCSV(t *testing.T) {
 	var buf bytes.Buffer
 	if err := Render(&buf, sample, FormatCSV); err != nil {

@@ -30,6 +30,12 @@ func ParseFormat(s string) (Format, error) {
 	}
 }
 
+// HostScan は1台のホストに対するスキャン結果を表す。
+type HostScan struct {
+	Host    string           `json:"host"`
+	Results []scanner.Result `json:"ports"`
+}
+
 // Render は results を format に従って w へ書き出す。
 func Render(w io.Writer, results []scanner.Result, format Format) error {
 	switch format {
@@ -40,6 +46,56 @@ func Render(w io.Writer, results []scanner.Result, format Format) error {
 	default:
 		return renderText(w, results)
 	}
+}
+
+// RenderHostScans は複数ホストのスキャン結果を format に従って w へ書き出す。
+func RenderHostScans(w io.Writer, scans []HostScan, format Format) error {
+	switch format {
+	case FormatJSON:
+		return renderHostJSON(w, scans)
+	case FormatCSV:
+		return renderHostCSV(w, scans)
+	default:
+		return renderHostText(w, scans)
+	}
+}
+
+func renderHostText(w io.Writer, scans []HostScan) error {
+	for _, hs := range scans {
+		if _, err := fmt.Fprintf(w, "=== %s ===\n", hs.Host); err != nil {
+			return err
+		}
+		if err := renderText(w, hs.Results); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func renderHostJSON(w io.Writer, scans []HostScan) error {
+	if scans == nil {
+		scans = []HostScan{}
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(scans)
+}
+
+func renderHostCSV(w io.Writer, scans []HostScan) error {
+	cw := csv.NewWriter(w)
+	if err := cw.Write([]string{"host", "port", "status", "service"}); err != nil {
+		return err
+	}
+	for _, hs := range scans {
+		for _, r := range hs.Results {
+			row := []string{hs.Host, strconv.Itoa(r.Port), r.Status.String(), r.Service}
+			if err := cw.Write(row); err != nil {
+				return err
+			}
+		}
+	}
+	cw.Flush()
+	return cw.Error()
 }
 
 func renderText(w io.Writer, results []scanner.Result) error {
