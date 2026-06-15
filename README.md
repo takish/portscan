@@ -41,17 +41,36 @@ JSON で結果だけをファイルに保存（進捗は画面に残る）:
 ./portscan -format json > result.json
 ```
 
+同一セグメントの生存ホストを探索してまとめてスキャン（ホストディスカバリ）:
+
+```bash
+# サブネットを自動検出して探索 → 各生存ホストをスキャン
+./portscan -discover
+
+# サブネットを明示し、短いタイムアウトで高速に
+./portscan -discover -cidr 192.168.1.0/24 -timeout 500ms -threads 256
+```
+
 ### フラグ一覧
 
 | フラグ | 説明 | デフォルト |
 |--------|------|-----------|
-| `-host` | スキャン対象ホスト | `localhost` |
+| `-host` | スキャン対象ホスト（`-discover` 時は無視） | `localhost` |
 | `-start` | 開始ポート | `20` |
 | `-end` | 終了ポート | `10000` |
 | `-threads` | 並列ワーカー数（上限） | `100` |
 | `-timeout` | ポートあたりの接続タイムアウト | `2s` |
 | `-format` | 出力形式 (`text` / `json` / `csv`) | `text` |
 | `-show-filtered` | filtered（タイムアウト）ポートも表示 | `false` |
+| `-discover` | 同一セグメントの生存ホストを探索してスキャン | `false` |
+| `-cidr` | 探索するサブネット (例 `192.168.1.0/24`)。未指定で自動検出 | （自動） |
+
+### ホストディスカバリ
+
+`-discover` を付けると、サブネット内の各ホストへ代表ポート（80/443/22 等）に
+TCP 接続を試み、**接続成功または「接続拒否」が返ったホストを生存**とみなす。
+ICMP を使わないため **root 権限は不要**。検出した生存ホストを順にポートスキャンし、
+ホストごとにグループ化して出力する。
 
 ### ポート状態
 
@@ -93,8 +112,11 @@ localhost で 1001 ポートをスキャンした参考値:
     │   ├── scanner.go           # スキャン中核ロジック（net.Dialer + worker pool）
     │   ├── service.go           # ポート番号 → サービス名マッピング
     │   └── scanner_test.go      # テスト・ベンチマーク
+    ├── discover/
+    │   ├── discover.go          # サブネット列挙＋TCPピングによる生存ホスト探索
+    │   └── discover_test.go     # テスト
     └── report/
-        ├── report.go            # text / json / csv レンダラ
+        ├── report.go            # text / json / csv レンダラ（単一／複数ホスト）
         └── report_test.go       # テスト
 ```
 
