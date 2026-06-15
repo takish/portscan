@@ -61,6 +61,13 @@ func (c *Confidence) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// 表示ラベル。OS 推定行の見出しを report / tui で共通化し、文言のズレを防ぐ。
+// 確度の値表現（Confidence.String）と同様、表示語彙は osdetect に集約する。
+const (
+	LabelOS         = "推定OS"
+	LabelConfidence = "確度"
+)
+
 // OSUnknown は推定できなかった場合の OS 名。
 const OSUnknown = "unknown"
 
