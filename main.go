@@ -9,11 +9,12 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/takish/portscan/internal/report"
 	"github.com/takish/portscan/internal/scanner"
 )
 
 func main() {
-	cfg, err := parseFlags(os.Args[1:])
+	cfg, format, err := parseFlags(os.Args[1:])
 	if err != nil {
 		// -h / --help は正常動作なので、エラー文言なしで終了コード0で抜ける。
 		if errors.Is(err, flag.ErrHelp) {
@@ -27,7 +28,8 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	fmt.Printf("scanning %s port %d-%d...\n", cfg.Host, cfg.PortStart, cfg.PortEnd)
+	// 進捗・サマリは stderr へ。結果本体は stdout へ出し、パイプ連携を妨げない。
+	fmt.Fprintf(os.Stderr, "scanning %s port %d-%d...\n", cfg.Host, cfg.PortStart, cfg.PortEnd)
 
 	results, err := scanner.Scan(ctx, cfg)
 	if err != nil {
@@ -35,14 +37,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	for _, r := range results {
-		fmt.Printf(" %d [open]  -->   %s\n", r.Port, r.Service)
+	if err := report.Render(os.Stdout, results, format); err != nil {
+		fmt.Fprintln(os.Stderr, "出力失敗:", err)
+		os.Exit(1)
 	}
-	fmt.Printf("%d 個の開放ポートが見つかりました\n", len(results))
+
+	fmt.Fprintf(os.Stderr, "%d 個のポートを検出しました\n", len(results))
 }
 
-// parseFlags はコマンドライン引数を解析して Config を組み立てる。
-func parseFlags(args []string) (scanner.Config, error) {
+// parseFlags はコマンドライン引数を解析して Config と出力フォーマットを組み立てる。
+func parseFlags(args []string) (scanner.Config, report.Format, error) {
 	fs := flag.NewFlagSet("portscan", flag.ContinueOnError)
 
 	host := fs.String("host", "localhost", "スキャン対象ホスト")
@@ -50,16 +54,25 @@ func parseFlags(args []string) (scanner.Config, error) {
 	end := fs.Int("end", 10000, "終了ポート")
 	threads := fs.Int("threads", 100, "並列ワーカー数")
 	timeout := fs.Duration("timeout", 2*time.Second, "ポートあたりの接続タイムアウト")
+	formatStr := fs.String("format", "text", "出力形式 (text/json/csv)")
+	showFiltered := fs.Bool("show-filtered", false, "filtered（タイムアウト）ポートも表示する")
 
 	if err := fs.Parse(args); err != nil {
-		return scanner.Config{}, err
+		return scanner.Config{}, "", err
 	}
 
-	return scanner.Config{
-		Host:      *host,
-		PortStart: *start,
-		PortEnd:   *end,
-		Threads:   *threads,
-		Timeout:   *timeout,
-	}, nil
+	format, err := report.ParseFormat(*formatStr)
+	if err != nil {
+		return scanner.Config{}, "", err
+	}
+
+	cfg := scanner.Config{
+		Host:            *host,
+		PortStart:       *start,
+		PortEnd:         *end,
+		Threads:         *threads,
+		Timeout:         *timeout,
+		IncludeFiltered: *showFiltered,
+	}
+	return cfg, format, nil
 }

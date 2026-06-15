@@ -37,6 +37,9 @@ func TestScan_FindsOpenPort(t *testing.T) {
 	if len(results) != 1 || results[0].Port != port {
 		t.Fatalf("開放ポート %d を検出できず: %+v", port, results)
 	}
+	if results[0].Status != StatusOpen {
+		t.Fatalf("状態が open ではない: %v", results[0].Status)
+	}
 }
 
 func TestScan_ResultsSorted(t *testing.T) {
@@ -125,6 +128,47 @@ func TestConfig_Validate(t *testing.T) {
 	}
 }
 
+func TestProbe_ClosedPort(t *testing.T) {
+	// リスナーを立ててすぐ閉じ、確実に「閉じている」ポート番号を得る。
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("リスナー作成に失敗: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	if got := probe(context.Background(), "127.0.0.1", port, time.Second); got != StatusClosed {
+		t.Fatalf("probe(closed)=%v, want closed", got)
+	}
+}
+
+func TestScan_ClosedNotReported(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("リスナー作成に失敗: %v", err)
+	}
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+
+	cfg := Config{Host: "127.0.0.1", PortStart: port, PortEnd: port, Threads: 1, Timeout: time.Second}
+	results, err := Scan(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Scan が失敗: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("closed ポートが結果に含まれている: %+v", results)
+	}
+}
+
+func TestStatus_String(t *testing.T) {
+	cases := map[Status]string{StatusOpen: "open", StatusClosed: "closed", StatusFiltered: "filtered"}
+	for s, want := range cases {
+		if got := s.String(); got != want {
+			t.Errorf("Status(%d).String()=%q, want %q", s, got, want)
+		}
+	}
+}
+
 func TestDescribePort(t *testing.T) {
 	if got := DescribePort(22); got != "SSH" {
 		t.Errorf("DescribePort(22)=%q, want SSH", got)
@@ -134,5 +178,24 @@ func TestDescribePort(t *testing.T) {
 	}
 	if got := DescribePort(12345); got != "unknown" {
 		t.Errorf("DescribePort(12345)=%q, want unknown", got)
+	}
+}
+
+// BenchmarkScan は閉じたポート範囲（接続拒否が即返る）に対する
+// 並列スキャンのスループットを測る。-benchtime や -cpu と併用して
+// 並列数の効果を比較するのに使う。
+func BenchmarkScan(b *testing.B) {
+	cfg := Config{
+		Host:      "127.0.0.1",
+		PortStart: 30000,
+		PortEnd:   31000,
+		Threads:   100,
+		Timeout:   time.Second,
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := Scan(context.Background(), cfg); err != nil {
+			b.Fatalf("Scan が失敗: %v", err)
+		}
 	}
 }
