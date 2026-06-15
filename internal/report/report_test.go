@@ -41,16 +41,25 @@ func TestRenderJSON(t *testing.T) {
 	if err := Render(&buf, sample, FormatJSON); err != nil {
 		t.Fatalf("Render が失敗: %v", err)
 	}
-	var got []scanner.Result
+	var got struct {
+		OS struct {
+			OS string `json:"os"`
+		} `json:"os"`
+		Ports []scanner.Result `json:"ports"`
+	}
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
 		t.Fatalf("JSON として解析できない: %v\n%s", err, buf.String())
 	}
-	if len(got) != 2 || got[0].Port != 22 {
+	if len(got.Ports) != 2 || got.Ports[0].Port != 22 {
 		t.Errorf("JSON 解析結果が不正: %+v", got)
 	}
 	// Status は文字列として出力されること。
 	if !strings.Contains(buf.String(), `"status": "open"`) {
 		t.Errorf("status が文字列で出力されていない:\n%s", buf.String())
+	}
+	// OS 推定オブジェクトを含むこと。
+	if !strings.Contains(buf.String(), `"os"`) {
+		t.Errorf("os フィールドが出力されていない:\n%s", buf.String())
 	}
 }
 
@@ -59,9 +68,18 @@ func TestRenderJSON_Empty(t *testing.T) {
 	if err := Render(&buf, nil, FormatJSON); err != nil {
 		t.Fatalf("Render が失敗: %v", err)
 	}
-	// nil でも "null" ではなく空配列 "[]" になること。
-	if got := strings.TrimSpace(buf.String()); got != "[]" {
-		t.Errorf("空結果の JSON が %q、want []", got)
+	// ports は "null" ではなく空配列になること。
+	var got struct {
+		Ports []scanner.Result `json:"ports"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("JSON として解析できない: %v\n%s", err, buf.String())
+	}
+	if got.Ports == nil || len(got.Ports) != 0 {
+		t.Errorf("空結果の ports が %v、want []", got.Ports)
+	}
+	if !strings.Contains(buf.String(), `"ports": []`) {
+		t.Errorf("空 ports が [] で出力されていない:\n%s", buf.String())
 	}
 }
 
@@ -131,16 +149,18 @@ func TestRenderJSON_IncludesRisk(t *testing.T) {
 	if err := Render(&buf, riskyPort, FormatJSON); err != nil {
 		t.Fatalf("Render が失敗: %v", err)
 	}
-	var got []struct {
-		Port int `json:"port"`
-		Risk *struct {
-			Severity string `json:"severity"`
-		} `json:"risk"`
+	var got struct {
+		Ports []struct {
+			Port int `json:"port"`
+			Risk *struct {
+				Severity string `json:"severity"`
+			} `json:"risk"`
+		} `json:"ports"`
 	}
 	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
 		t.Fatalf("JSON 解析失敗: %v\n%s", err, buf.String())
 	}
-	if len(got) != 1 || got[0].Risk == nil || got[0].Risk.Severity != "critical" {
+	if len(got.Ports) != 1 || got.Ports[0].Risk == nil || got.Ports[0].Risk.Severity != "critical" {
 		t.Errorf("JSON に risk.severity=critical が無い: %+v", got)
 	}
 }
@@ -156,6 +176,58 @@ func TestRenderCSV_IncludesRisk(t *testing.T) {
 	}
 	if !strings.Contains(out, "6379,open,Redis,critical") {
 		t.Errorf("CSV 行にリスク情報が無い:\n%s", out)
+	}
+}
+
+// OS 推定が各フォーマットに出力されることを確認する。
+var windowsPorts = []scanner.Result{
+	{Port: 135, Status: scanner.StatusOpen, Service: "MSRPC"},
+	{Port: 139, Status: scanner.StatusOpen, Service: "NetBIOS"},
+	{Port: 445, Status: scanner.StatusOpen, Service: "SMB"},
+	{Port: 3389, Status: scanner.StatusOpen, Service: "RDP"},
+}
+
+func TestRenderText_IncludesOS(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, windowsPorts, FormatText); err != nil {
+		t.Fatalf("Render が失敗: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "推定OS: Windows") || !strings.Contains(out, "確度:") {
+		t.Errorf("text 出力に OS 推定が含まれない:\n%s", out)
+	}
+}
+
+func TestRenderJSON_IncludesOS(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, windowsPorts, FormatJSON); err != nil {
+		t.Fatalf("Render が失敗: %v", err)
+	}
+	var got struct {
+		OS struct {
+			OS         string `json:"os"`
+			Confidence string `json:"confidence"`
+		} `json:"os"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("JSON 解析失敗: %v\n%s", err, buf.String())
+	}
+	if got.OS.OS != "Windows" || got.OS.Confidence != "medium" {
+		t.Errorf("JSON の OS 推定が不正: %+v", got.OS)
+	}
+}
+
+func TestRenderCSV_IncludesOS(t *testing.T) {
+	var buf bytes.Buffer
+	if err := Render(&buf, windowsPorts, FormatCSV); err != nil {
+		t.Fatalf("Render が失敗: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "os,os_confidence") {
+		t.Errorf("CSV ヘッダに OS 列が無い:\n%s", out)
+	}
+	if !strings.Contains(out, "Windows,medium") {
+		t.Errorf("CSV 行に OS 推定が無い:\n%s", out)
 	}
 }
 
