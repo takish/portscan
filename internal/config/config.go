@@ -20,18 +20,19 @@ import (
 // Config は設定ファイルの内容を表す。各フィールドはポインタで、
 // JSON に存在したキーだけが非 nil になる（未指定はフラグ既定値を温存する）。
 type Config struct {
-	Host         *string `json:"host,omitempty"`
-	Start        *int    `json:"start,omitempty"`
-	End          *int    `json:"end,omitempty"`
-	Threads      *int    `json:"threads,omitempty"`
-	Timeout      *string `json:"timeout,omitempty"` // "2s" のような duration 文字列
-	Format       *string `json:"format,omitempty"`
-	ShowFiltered *bool   `json:"show_filtered,omitempty"`
-	Banner       *bool   `json:"banner,omitempty"`
-	Discover     *bool   `json:"discover,omitempty"`
-	CIDR         *string `json:"cidr,omitempty"`
-	TUI          *bool   `json:"tui,omitempty"`
-	Mdns         *bool   `json:"mdns,omitempty"`
+	Host          *string `json:"host,omitempty"`
+	Start         *int    `json:"start,omitempty"`
+	End           *int    `json:"end,omitempty"`
+	Threads       *int    `json:"threads,omitempty"`
+	Timeout       *string `json:"timeout,omitempty"` // "2s" のような duration 文字列
+	Format        *string `json:"format,omitempty"`
+	ShowFiltered  *bool   `json:"show_filtered,omitempty"`
+	Banner        *bool   `json:"banner,omitempty"`
+	Discover      *bool   `json:"discover,omitempty"`
+	CIDR          *string `json:"cidr,omitempty"`
+	TUI           *bool   `json:"tui,omitempty"`
+	Mdns          *bool   `json:"mdns,omitempty"`
+	OSFingerprint *bool   `json:"os_fingerprint,omitempty"`
 }
 
 // DefaultPaths は -config 無指定時に順に探索する設定ファイルのパスを返す。
@@ -165,6 +166,11 @@ func (c Config) ApplyTo(fs *flag.FlagSet, explicit map[string]bool) error {
 	}
 	if c.Mdns != nil {
 		if err := set("mdns", strconv.FormatBool(*c.Mdns)); err != nil {
+			return err
+		}
+	}
+	if c.OSFingerprint != nil {
+		if err := set("os-fingerprint", strconv.FormatBool(*c.OSFingerprint)); err != nil {
 			return err
 		}
 	}

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/takish/portscan/internal/discover"
+	"github.com/takish/portscan/internal/fingerprint"
 	"github.com/takish/portscan/internal/mdns"
 	"github.com/takish/portscan/internal/report"
 	"github.com/takish/portscan/internal/scanner"
@@ -24,12 +25,13 @@ const mdnsTimeout = 2 * time.Second
 
 // Options は解析済みのコマンドライン設定をまとめる。
 type Options struct {
-	Cfg      scanner.Config
-	Format   report.Format
-	Discover bool
-	CIDR     string
-	TUI      bool
-	Mdns     bool
+	Cfg           scanner.Config
+	Format        report.Format
+	Discover      bool
+	CIDR          string
+	TUI           bool
+	Mdns          bool
+	OSFingerprint bool
 }
 
 // RunSingle は単一ホストのポートスキャンを実行し、結果を stdout へ書く。
@@ -53,6 +55,9 @@ func RunSingle(ctx context.Context, opts Options, stdout, stderr io.Writer) erro
 	var meta report.Meta
 	if mdnsCh != nil {
 		meta = metaForHost(<-mdnsCh, cfg.Host)
+	}
+	if opts.OSFingerprint {
+		meta.TTL = probeTTL(ctx, stderr, cfg.Host, cfg.Timeout)
 	}
 
 	if err := report.RenderWithMeta(stdout, results, opts.Format, meta); err != nil {
@@ -108,6 +113,9 @@ func RunDiscover(ctx context.Context, opts Options, stdout, stderr io.Writer) er
 	entries := <-mdnsCh
 	for i := range scans {
 		scans[i].Meta = metaForHost(entries, scans[i].Host)
+		if opts.OSFingerprint {
+			scans[i].Meta.TTL = probeTTL(ctx, stderr, scans[i].Host, opts.Cfg.Timeout)
+		}
 	}
 
 	if err := report.RenderHostScans(stdout, scans, opts.Format); err != nil {
@@ -132,6 +140,18 @@ func startMDNS(ctx context.Context, stderr io.Writer) <-chan map[string]mdns.Ent
 		ch <- entries
 	}()
 	return ch
+}
+
+// probeTTL は host へ ICMP echo を送り、応答 TTL（OS 系統推定のヒント）を返す。
+// 失敗（ICMP 不通・タイムアウト等）は補助機能なのでエラーにせず 0 を返し、
+// その旨だけ stderr へ控えめに通知する。
+func probeTTL(ctx context.Context, stderr io.Writer, host string, timeout time.Duration) int {
+	ttl, ok := fingerprint.ProbeTTL(ctx, host, timeout)
+	if !ok {
+		fmt.Fprintf(stderr, "  %s の ICMP TTL 取得に失敗（OS 系統ヒント無しで続行）\n", host)
+		return 0
+	}
+	return ttl
 }
 
 // metaForHost は host に対応する mDNS 情報を report.Meta へ変換する。

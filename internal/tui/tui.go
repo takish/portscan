@@ -18,6 +18,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/takish/portscan/internal/fingerprint"
 	"github.com/takish/portscan/internal/mdns"
 	"github.com/takish/portscan/internal/osdetect"
 	"github.com/takish/portscan/internal/risk"
@@ -35,6 +36,10 @@ type (
 	mdnsResultMsg struct {
 		hostname string
 		model    string
+	}
+	// ttlResultMsg は ICMP TTL 取得の完了通知。失敗時は ttl=0 で届く。
+	ttlResultMsg struct {
+		ttl int
 	}
 )
 
@@ -73,12 +78,14 @@ type model struct {
 	cancel   context.CancelFunc // q 押下時にスキャンを中断する
 	progress progress.Model
 	useMDNS  bool // -mdns 指定時のみ mDNS を併用する
+	useFP    bool // -os-fingerprint 指定時のみ ICMP TTL を併用する
 
 	scanned  int
 	total    int
 	found    []scanner.Result
 	hostname string // mDNS で得たホスト名（取得後のみ）
 	osModel  string // mDNS で得たデバイスモデル（OS 推定ヒント）
+	osTTL    int    // ICMP TTL（OS 系統推定ヒント。0 なら未取得）
 	mdnsDone bool   // mDNS 収集が完了したか
 	done     bool
 }
@@ -112,11 +119,25 @@ func browseMDNSCmd(ctx context.Context, host string) tea.Cmd {
 	}
 }
 
+// fingerprintCmd は ICMP TTL 取得をバックグラウンドで行う tea.Cmd を返す。
+// ProbeTTL は応答待ちでブロックしうるが、tea.Cmd は goroutine 実行なので
+// UI のイベントループは止まらない。結果は ttlResultMsg で Update へ届く。
+func fingerprintCmd(ctx context.Context, host string, timeout time.Duration) tea.Cmd {
+	return func() tea.Msg {
+		ttl, _ := fingerprint.ProbeTTL(ctx, host, timeout)
+		return ttlResultMsg{ttl: ttl}
+	}
+}
+
 func (m model) Init() tea.Cmd {
 	cmds := []tea.Cmd{waitForEvent(m.ch)}
 	if m.useMDNS {
 		// スキャンと並行で mDNS を走らせ、結果が来たら表示へ反映する。
 		cmds = append(cmds, browseMDNSCmd(m.ctx, m.cfg.Host))
+	}
+	if m.useFP {
+		// スキャンと並行で ICMP TTL を取得し、OS 系統の推定材料にする。
+		cmds = append(cmds, fingerprintCmd(m.ctx, m.cfg.Host, m.cfg.Timeout))
 	}
 	return tea.Batch(cmds...)
 }
@@ -161,6 +182,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.mdnsDone = true
 		return m, nil
 
+	case ttlResultMsg:
+		m.osTTL = msg.ttl
+		return m, nil
+
 	case doneMsg:
 		m.done = true
 		cmd := m.progress.SetPercent(1.0)
@@ -201,7 +226,7 @@ func (m model) View() string {
 		header = true
 	}
 	// 開放ポートの顔ぶれ（＋mDNS モデル）から OS と種別を推定して併記する。
-	if g := osdetect.DetectWithHints(shown, osdetect.Hints{Model: m.osModel}); g.Known() {
+	if g := osdetect.DetectWithHints(shown, osdetect.Hints{Model: m.osModel, TTL: m.osTTL}); g.Known() {
 		// 種別はユーザーの主関心なので OS 行の前に出す（確度は OS 行に集約）。
 		if g.Device.Known() {
 			b.WriteString(fmt.Sprintf("  %s: %s\n", osdetect.LabelDevice, g.Device))
@@ -244,7 +269,8 @@ func (m model) View() string {
 // 結果はピプ連携の対象ではなく画面表示専用なので、altscreen を使わず
 // 終了後も最終フレームが端末に残るようにしている。
 // useMDNS が真ならスキャンと並行で mDNS を収集し、ホスト名・モデルを併記する。
-func Run(ctx context.Context, cfg scanner.Config, useMDNS bool) error {
+// useFingerprint が真なら ICMP TTL も取得し、OS 系統の推定材料に加える。
+func Run(ctx context.Context, cfg scanner.Config, useMDNS, useFingerprint bool) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -265,6 +291,7 @@ func Run(ctx context.Context, cfg scanner.Config, useMDNS bool) error {
 		progress: progress.New(progress.WithDefaultGradient()),
 		total:    cfg.PortEnd - cfg.PortStart + 1,
 		useMDNS:  useMDNS,
+		useFP:    useFingerprint,
 	}
 
 	_, err = tea.NewProgram(m).Run()
