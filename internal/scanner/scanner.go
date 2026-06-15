@@ -4,6 +4,8 @@ package scanner
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -12,13 +14,61 @@ import (
 	"time"
 )
 
+// Status はポートのスキャン結果の状態を表す。
+type Status int
+
+const (
+	StatusOpen     Status = iota // 接続に成功した（ポート開放）
+	StatusClosed                 // 接続を拒否された（ポート閉鎖、相手は応答）
+	StatusFiltered               // タイムアウト（FW等でドロップされた可能性）
+)
+
+// String は状態の表示用文字列を返す。
+func (s Status) String() string {
+	switch s {
+	case StatusOpen:
+		return "open"
+	case StatusClosed:
+		return "closed"
+	case StatusFiltered:
+		return "filtered"
+	default:
+		return "unknown"
+	}
+}
+
+// MarshalJSON は Status を文字列として JSON 出力する。
+func (s Status) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.String())
+}
+
+// UnmarshalJSON は文字列表現の Status を読み戻す。
+func (s *Status) UnmarshalJSON(data []byte) error {
+	var str string
+	if err := json.Unmarshal(data, &str); err != nil {
+		return err
+	}
+	switch str {
+	case "open":
+		*s = StatusOpen
+	case "closed":
+		*s = StatusClosed
+	case "filtered":
+		*s = StatusFiltered
+	default:
+		return fmt.Errorf("不明な Status: %q", str)
+	}
+	return nil
+}
+
 // Config はスキャンの設定を保持する。
 type Config struct {
-	Host      string        // スキャン対象ホスト（例: "localhost"）
-	PortStart int           // スキャン開始ポート
-	PortEnd   int           // スキャン終了ポート（含む）
-	Threads   int           // 並列ワーカー数
-	Timeout   time.Duration // ポート1つあたりの接続タイムアウト
+	Host            string        // スキャン対象ホスト（例: "localhost"）
+	PortStart       int           // スキャン開始ポート
+	PortEnd         int           // スキャン終了ポート（含む）
+	Threads         int           // 並列ワーカー数（上限）
+	Timeout         time.Duration // ポート1つあたりの接続タイムアウト
+	IncludeFiltered bool          // true の場合、filtered（タイムアウト）ポートも結果に含める
 }
 
 // Validate は設定値が妥当かを検証する。
@@ -44,31 +94,47 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Result は1つの開放ポートの情報を表す。
+// Result は1つのポートのスキャン結果を表す。
 type Result struct {
-	Port    int    // ポート番号
-	Service string // 推定サービス名（不明な場合は "unknown"）
+	Port    int    `json:"port"`    // ポート番号
+	Status  Status `json:"status"`  // ポートの状態
+	Service string `json:"service"` // 推定サービス名（不明な場合は "unknown"）
 }
 
-// Scan は cfg に従ってポートをスキャンし、開放ポートを番号の昇順で返す。
+// portResult はワーカーからコレクタへ渡す内部用の結果。
+type portResult struct {
+	port   int
+	status Status
+}
+
+// Scan は cfg に従ってポートをスキャンし、報告対象のポートを番号の昇順で返す。
+// 既定では open のみを返し、cfg.IncludeFiltered が true なら filtered も含める。
 // ctx のキャンセルで途中終了でき、その場合は ctx.Err() を返す。
 func Scan(ctx context.Context, cfg Config) ([]Result, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
+	// S-1: ポート数より多いワーカーを起動しても無駄なので頭打ちにする。
+	nPorts := cfg.PortEnd - cfg.PortStart + 1
+	workers := cfg.Threads
+	if workers > nPorts {
+		workers = nPorts
+	}
+
 	ports := make(chan int)
-	found := make(chan int)
+	found := make(chan portResult)
 
 	// ワーカー: ports から受け取ったポートを順に接続試行する。
 	var wg sync.WaitGroup
-	for i := 0; i < cfg.Threads; i++ {
+	for i := 0; i < workers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			for port := range ports {
-				if isOpen(ctx, cfg.Host, port, cfg.Timeout) {
-					found <- port
+				status := probe(ctx, cfg.Host, port, cfg.Timeout)
+				if status == StatusOpen || (status == StatusFiltered && cfg.IncludeFiltered) {
+					found <- portResult{port: port, status: status}
 				}
 			}
 		}()
@@ -92,9 +158,9 @@ func Scan(ctx context.Context, cfg Config) ([]Result, error) {
 		close(found)
 	}()
 
-	var open []int
-	for p := range found {
-		open = append(open, p)
+	var collected []portResult
+	for pr := range found {
+		collected = append(collected, pr)
 	}
 
 	// キャンセルされていた場合は不完全な結果なのでエラーを返す。
@@ -102,22 +168,39 @@ func Scan(ctx context.Context, cfg Config) ([]Result, error) {
 		return nil, err
 	}
 
-	sort.Ints(open)
-	results := make([]Result, len(open))
-	for i, p := range open {
-		results[i] = Result{Port: p, Service: DescribePort(p)}
+	sort.Slice(collected, func(i, j int) bool {
+		return collected[i].port < collected[j].port
+	})
+	results := make([]Result, len(collected))
+	for i, pr := range collected {
+		results[i] = Result{Port: pr.port, Status: pr.status, Service: DescribePort(pr.port)}
 	}
 	return results, nil
 }
 
-// isOpen は host:port へ TCP 接続を試み、成功すれば開放とみなす。
-func isOpen(ctx context.Context, host string, port int, timeout time.Duration) bool {
+// probe は host:port へ TCP 接続を試み、状態を判定する。
+//   - 接続成功            → StatusOpen
+//   - タイムアウト        → StatusFiltered
+//   - それ以外（拒否等）  → StatusClosed
+func probe(ctx context.Context, host string, port int, timeout time.Duration) Status {
 	d := net.Dialer{Timeout: timeout}
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := d.DialContext(ctx, "tcp", addr)
-	if err != nil {
-		return false
+	if err == nil {
+		_ = conn.Close()
+		return StatusOpen
 	}
-	_ = conn.Close()
-	return true
+	if isTimeout(err) {
+		return StatusFiltered
+	}
+	return StatusClosed
+}
+
+// isTimeout はエラーがネットワークタイムアウトかどうかを判定する。
+func isTimeout(err error) bool {
+	var ne net.Error
+	if errors.As(err, &ne) {
+		return ne.Timeout()
+	}
+	return false
 }
