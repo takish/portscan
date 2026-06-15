@@ -69,6 +69,24 @@ func TestMerge_NoUsefulRecords(t *testing.T) {
 	}
 }
 
+func TestLookup(t *testing.T) {
+	entries := map[string]Entry{
+		"192.168.1.5": {Host: "Mac.local", Model: "Macmini9,1"},
+	}
+	// IP キーで直接ヒットする。
+	if e, ok := Lookup(entries, "192.168.1.5"); !ok || e.Model != "Macmini9,1" {
+		t.Errorf("IP 直引きに失敗: %+v ok=%v", e, ok)
+	}
+	// 未知のホストはヒットしない（名前解決しても一致しない）。
+	if _, ok := Lookup(entries, "203.0.113.1"); ok {
+		t.Error("未知ホストでヒットした")
+	}
+	// 空マップは常に false。
+	if _, ok := Lookup(nil, "192.168.1.5"); ok {
+		t.Error("空マップでヒットした")
+	}
+}
+
 func TestTrimDot(t *testing.T) {
 	if got := trimDot("host.local."); got != "host.local" {
 		t.Errorf("trimDot=%q, want host.local", got)

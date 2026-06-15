@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"net"
 	"os"
 	"os/signal"
 	"time"
@@ -49,7 +48,8 @@ func main() {
 
 	if opts.tui {
 		// TUI は単一ホスト専用。中断は画面内の q / Ctrl-C で行う。
-		if err := tui.Run(ctx, opts.cfg); err != nil {
+		// -mdns 指定時はスキャンと並行で mDNS を収集しホスト名等を併記する。
+		if err := tui.Run(ctx, opts.cfg, opts.mdns); err != nil {
 			fmt.Fprintln(os.Stderr, "TUI 失敗:", err)
 			os.Exit(1)
 		}
@@ -112,20 +112,11 @@ func startMDNS(ctx context.Context) <-chan map[string]mdns.Entry {
 	return ch
 }
 
-// metaForHost は host（IP もしくは名前）に対応する mDNS 情報を引く。
-// mDNS の Entry は応答元 IP をキーにしているので、名前なら解決して照合する。
+// metaForHost は host に対応する mDNS 情報を report.Meta へ変換する。
+// 照合（IP キー引き・名前解決）は mdns.Lookup に委ねる。
 func metaForHost(entries map[string]mdns.Entry, host string) report.Meta {
-	if len(entries) == 0 {
-		return report.Meta{}
-	}
-	if e, ok := entries[host]; ok {
+	if e, ok := mdns.Lookup(entries, host); ok {
 		return report.Meta{Hostname: e.Host, Model: e.Model}
-	}
-	ips, _ := net.LookupHost(host)
-	for _, ip := range ips {
-		if e, ok := entries[ip]; ok {
-			return report.Meta{Hostname: e.Host, Model: e.Model}
-		}
 	}
 	return report.Meta{}
 }
