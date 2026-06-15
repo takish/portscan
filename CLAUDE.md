@@ -17,7 +17,7 @@ go build -o portscan .  # Makefile 不使用の場合
 ```
 main.go                    フラグ解析・モード振り分け（CLI エントリポイント）
 internal/
-  scanner/  net.Dialer + worker pool でポートスキャン
+  scanner/  net.Dialer + worker pool でポートスキャン（banner.go: バナー取得）
   discover/ サブネット列挙 + TCPピングでホスト探索
   report/   text/json/csv レンダラ（リスク情報を結合）
   risk/     開放ポート→深刻度・攻撃・対策の静的 DB
@@ -38,6 +38,7 @@ internal/
 | `-timeout` | 2s | 接続タイムアウト |
 | `-format` | text | text / json / csv |
 | `-show-filtered` | false | タイムアウトポートも表示 |
+| `-banner` | false | 開放ポートのバナーを取得しサービス/バージョン推定 |
 | `-discover` | false | ホストディスカバリモード |
 | `-cidr` | 自動 | サブネット指定 |
 | `-tui` | false | TUI インタラクティブモード |

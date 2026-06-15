@@ -128,6 +128,7 @@ func parseFlags(args []string) (options, error) {
 	timeout := fs.Duration("timeout", 2*time.Second, "ポートあたりの接続タイムアウト")
 	formatStr := fs.String("format", "text", "出力形式 (text/json/csv)")
 	showFiltered := fs.Bool("show-filtered", false, "filtered（タイムアウト）ポートも表示する")
+	banner := fs.Bool("banner", false, "開放ポートのバナーを取得しサービス/バージョンを推定する（低速・やや侵襲的）")
 	discoverMode := fs.Bool("discover", false, "同一セグメントの生存ホストを探索してスキャンする")
 	cidr := fs.String("cidr", "", "探索するサブネット (例: 192.168.1.0/24)。未指定なら自動検出")
 	tuiMode := fs.Bool("tui", false, "インタラクティブな TUI 画面でスキャンする（単一ホスト専用）")
@@ -154,6 +155,7 @@ func parseFlags(args []string) (options, error) {
 			Threads:         *threads,
 			Timeout:         *timeout,
 			IncludeFiltered: *showFiltered,
+			GrabBanner:      *banner,
 		},
 		format:   format,
 		discover: *discoverMode,
